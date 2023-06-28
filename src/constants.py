@@ -1,0 +1,22 @@
+attrs = [
+    "background",
+    "skin",
+    "l_brow",
+    "r_brow",
+    "l_eye",
+    "r_eye",
+    "eye_g",
+    "l_ear",
+    "r_ear",
+    "ear_r",
+    "nose",
+    "mouth",
+    "u_lip",
+    "l_lip",
+    "neck",
+    "neck_l",
+    "cloth",
+    "hair",
+    "hat",
+]
+attr_dict = {i: j for i, j in zip(attrs, range(len(attrs)))}
