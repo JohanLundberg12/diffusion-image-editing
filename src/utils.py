@@ -1,164 +1,143 @@
 # utils.py
-from typing import TYPE_CHECKING, List
-from typing import Union
+from typing import Union, List, Optional
 from IPython.display import display
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 import torch
+from diffusers import DDIMPipeline
+from itertools import zip_longest
 
 
-def generate_random_samples(num_samples, model):
+def get_device(verbose: bool = False) -> torch.device:
+    """Returns the device to be used for training."""
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+
+    if verbose:
+        print(f"Using {device} as backend")
+
+    return device
+
+
+def generate_random_samples(
+    num_samples: int, model: DDIMPipeline
+) -> Union[torch.Tensor, List[torch.Tensor]]:
     if num_samples == 1:
         return torch.randn(
             1,
-            model.unet.config.in_channels,
-            model.unet.config.sample_size,
-            model.unet.config.sample_size,
+            model.unet.config.in_channels,  # type: ignore
+            model.unet.config.sample_size,  # type: ignore
+            model.unet.config.sample_size,  # type: ignore
         ).to("cuda")
     else:
-        return [generate_random_samples(1, model) for _ in range(num_samples)]
-
-
-def masking(mask, zo, zv):
-    return mask * zv + ((1 - mask) * zo)
-
-
-def synthesize_residual(
-    model, input_image, step_idx, step_time, mask=None, residuals_o: List = []
-):
-    with torch.no_grad():
-        residual = model.unet(input_image, step_time).sample
-
-        if mask is not None:
-            residual = masking(mask, residuals_o[step_idx], residual)
-
-    return residual
-
-
-def dilation_mask(mask, dilation2d):
-    mask = mask.unsqueeze(0).unsqueeze(0)
-    mask = dilation2d(mask).detach().cpu().permute(0, 2, 3, 1).squeeze().squeeze()
-
-    return mask
-
-
-def create_mask(parsing, classes, dilation, preprocess, dilation2d) -> torch.Tensor:
-    masks = list()
-    for cls in classes:
-        mask = parsing == cls
-        mask = mask.float()
-        if dilation:
-            mask = dilation_mask(mask, dilation2d)
-        masks.append(mask)
-    mask = sum(masks)
-    mask = preprocess.resize_mask(mask)
-    mask = torch.cat(
-        [mask.unsqueeze(0), mask.unsqueeze(0), mask.unsqueeze(0)]
-    ).unsqueeze(0)
-    mask = mask.to("cuda")
-
-    return mask
+        return [
+            generate_random_samples(1, model) for _ in range(num_samples)
+        ]  # type: ignore
 
 
 def get_num_rows(num_images: int, num_cols: int) -> int:
+    """
+    Calculates the number of rows needed to display a given number of images in a grid with a given number of columns.
+
+    Args:
+        num_images (int): The total number of images to display.
+        num_cols (int): The number of columns in the grid.
+
+    Returns:
+        int: The number of rows needed to display all the images in the grid.
+    """
     num_rows = num_images // num_cols
     if num_images % num_cols > 0:
         num_rows += 1
     return num_rows
 
 
-def show_images_in_a_grid(images: list, titles: list, num_cols: int):
+def show_images_in_a_grid(images: List[Image.Image], titles: list, num_cols: int):
     num_rows = get_num_rows(len(images), num_cols)
-    fig, axarr = plt.subplots(num_rows, num_cols, figsize=(15, 15))
-    for i in range(len(images)):
-        if num_rows == 1:
-            axarr[i].imshow(images[i], cmap="gray")
-            axarr[i].set_title(titles[i])
-            axarr[i].axis("off")
-        elif num_cols == 1:
-            axarr[i].imshow(images[i], cmap="gray")
-            axarr[i].set_title(titles[i])
-            axarr[i].axis("off")
-        else:
-            row = i // num_cols
-            col = i % num_cols
-            axarr[row, col].imshow(images[i], cmap="gray")
-            axarr[row, col].set_title(titles[i])
-            axarr[row, col].axis("off")
+    fig, axarr = plt.subplots(num_rows, num_cols)
+    axarr = np.array(
+        axarr
+    )  # Make sure axarr is always an array, even when it's a single AxesSubplot object
+
+    for i, img in enumerate(images):
+        row = i // num_cols
+        col = i % num_cols
+        ax = axarr[row, col] if num_rows > 1 and num_cols > 1 else axarr[max(row, col)]
+        ax.imshow(img, cmap="gray")
+        ax.set_title(titles[i])
+        ax.axis("off")
     plt.tight_layout()
 
 
-def display_samples(samples, titles, num_cols):
-    images = list()
-
-    for sample in samples:
-        image_processed = sample.cpu().permute(0, 2, 3, 1)
-        image_processed = (image_processed + 1.0) * 127.5
-        image_processed = image_processed.numpy().astype(np.uint8)
-        image_pil = Image.fromarray(image_processed[0])
-        images.append(image_pil)
-
-    show_images_in_a_grid(images, titles, num_cols)
-
-
-def swap_axes(array: np.ndarray) -> np.ndarray:
+def tensor_to_numpy(sample: torch.Tensor) -> np.ndarray:
     """
-    Swaps the axes of a numpy array.
+    Converts torch tensor to numpy array with normalization.
     """
-    if array.ndim == 3 and (array.shape[0] == 3 or array.shape[0] == 1):
-        array = np.transpose(
-            array, (1, 2, 0)
-        )  # you could also do array.swapaxes(0,2).swapaxes(0,1)
-    return array
-
-
-def display_sample(sample: Union[np.ndarray, torch.Tensor], imshow=False):
-    """
-    Displays a single image sample.
-    """
-    if torch.is_tensor(sample):
-        if TYPE_CHECKING:
-            assert isinstance(sample, torch.Tensor)
-        if sample.device.type != "cpu":
-            sample = sample.cpu()
-        if sample.ndim == 4:
-            sample = sample.permute(0, 2, 3, 1)
-            sample = sample.squeeze()
-        sample = sample.numpy()
-
-    if TYPE_CHECKING:
-        assert isinstance(sample, np.ndarray)
+    if sample.device.type != "cpu":
+        sample = sample.cpu()
+    if sample.ndim == 4:
+        sample = sample.permute(0, 2, 3, 1)
+        sample = sample.squeeze()
+    sample = sample.numpy()
 
     sample_min = np.min(sample)
     sample_max = np.max(sample)
     sample_normalized = (sample - sample_min) / (sample_max - sample_min) * 255
-    sample_normalized = sample_normalized.astype(np.uint8)
+    return sample_normalized.astype(np.uint8)
 
-    if imshow:
-        return plt.imshow(sample_normalized)
+
+def sample_to_pil(sample: torch.Tensor) -> Image.Image:
+    """
+    Converts a torch tensor to a PIL image.
+    """
+    image_processed = tensor_to_numpy(sample)
+    return Image.fromarray(image_processed)
+
+
+def display_samples(
+    samples: Union[List[torch.Tensor], torch.Tensor],
+    titles: List[str] = [],
+    num_cols: int = 1,
+) -> None:
+    """
+    Displays the provided image samples.
+    If more than one column is specified, displays the images in a grid.
+    """
+    if isinstance(samples, torch.Tensor):
+        samples = [samples]
+
+    image_pils = [sample_to_pil(sample) for sample in samples]
+
+    if num_cols > 1:
+        show_images_in_a_grid(image_pils, titles=titles, num_cols=num_cols)
     else:
-        image_pil = Image.fromarray(sample_normalized)
+        for title, img_pil in zip_longest(titles, image_pils, fillvalue=""):
+            print(f"Title: {title}")
+            plt.figure()
+            display(img_pil)
+            plt.show()
 
-        return display(image_pil)
+
+# def imshow(img, title=""):
+# img = img.to("cpu")
+# img = img.permute(1, 2, 0, 3)
+# img = img.reshape(img.shape[0], img.shape[1], -1)
+# img = img / 2 + 0.5     # unnormalize
+# img = torch.clamp(img, min=0., max=1.)
+# npimg = img.numpy()
+# plt.imshow(np.transpose(npimg, (1, 2, 0)))
+# plt.title(title)
+# plt.show()
 
 
-# plot three images as a 1 x 3 grid
-def plot_images(images, titles, suptitle=""):
-    # if an image is a tensor on cuda convert it to numpy and ndim =4
-    images = [
-        ((image.cpu().permute(0, 2, 3, 1).numpy().squeeze() + 1.0) * 127.5).astype(
-            np.uint8
-        )
-        if ((isinstance(image, torch.Tensor)) and (image.ndim == 4))
-        else image
-        for image in images
-    ]
+def print_statistics(x_t: torch.Tensor, name: Optional[str] = None) -> None:
+    if name is not None:
+        print(f"Statistics for {name}")
 
-    fig, axs = plt.subplots(1, len(images), figsize=(10, 3))
-    for i, (image, title) in enumerate(zip(images, titles)):
-        axs[i].imshow(image)
-        axs[i].set_title(title)
-        axs[i].axis("off")
-    fig.suptitle(suptitle)
-    plt.show()
+    print(f"Mean of {name}: {x_t.mean():.2f}")
+    print(f"Std of {name}: {x_t.std():.2f}")
+    print(f"Min of {name}: {x_t.min():.2f}")
+    print(f"Max of {name}: {x_t.max():.2f}")
