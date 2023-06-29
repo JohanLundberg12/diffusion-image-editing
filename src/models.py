@@ -5,7 +5,7 @@ import torch
 # Local application/library specific imports
 # ! git clone https://github.com/JohanLundberg12/DDIM-Segmentation.git
 from DDIMSegmentation.model import BiSeNet
-from diffusers import DDIMPipeline  # type: ignore
+from diffusers import DiffusionPipeline, DDIMPipeline  # type: ignore
 
 from utils import get_device
 
@@ -19,16 +19,23 @@ def load_model(
     """
     Loads a pretrained model from the HuggingFace model hub.
     """
-    if not device:
-        device = get_device(verbose=True)
-    pipeline = DDIMPipeline.from_pretrained(model_id)
-    pipeline.to(device)  # type: ignore
-    pipeline.scheduler.set_timesteps(timesteps)  # type: ignore
+    # support loading "google/ddpm-celebahq-256" and "Compvis/ldm-celebahq-256"
+    if model_id == "Compvis/ldm-celebahq-256":
+        pipeline = DiffusionPipeline.from_pretrained(model_id)
+        pipeline.scheduler = DDIMPipeline.from_config(pipeline.scheduler.config)
+    elif model_id == "google/ddpm-celebahq-256":
+        pipeline = DDIMPipeline.from_pretrained(model_id)
+    else:
+        raise ValueError(f"Unknown model_id: {model_id}")
+
+    pipeline.to(device)
+    pipeline.scheduler.set_timesteps(timesteps)
 
     if not sample_clipping:
-        pipeline.scheduler.config.clip_sample = (
-            False  # won't work without this, maybe model was trained with this flag
-        )
+        # real image editing using DDPM won't work if not False, ddpm was trained with this flag=True
+        # but it needs to be False in real image editing
+        # LDM was trained with this flag=False
+        pipeline.scheduler.config.clip_sample = False
     else:
         pipeline.scheduler.config.clip_sample = True
 
