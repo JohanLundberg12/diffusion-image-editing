@@ -8,6 +8,11 @@ import torch
 from diffusers import DDIMPipeline
 from itertools import zip_longest
 
+from transforms import (
+    reverse_transform,
+    get_reverse_image_transform,
+)
+
 
 def get_device(verbose: bool = False) -> torch.device:
     """Returns the device to be used for training."""
@@ -55,7 +60,12 @@ def get_num_rows(num_images: int, num_cols: int) -> int:
     return num_rows
 
 
-def show_images_in_a_grid(images: List[Image.Image], titles: list, num_cols: int):
+def show_images_in_a_grid(
+    images: List[Image.Image],
+    titles: list,
+    num_cols: int,
+    super_title: Optional[str] = None,
+):
     num_rows = get_num_rows(len(images), num_cols)
     fig, axarr = plt.subplots(num_rows, num_cols)
     axarr = np.array(
@@ -66,41 +76,19 @@ def show_images_in_a_grid(images: List[Image.Image], titles: list, num_cols: int
         row = i // num_cols
         col = i % num_cols
         ax = axarr[row, col] if num_rows > 1 and num_cols > 1 else axarr[max(row, col)]
-        ax.imshow(img, cmap="gray")
+        ax.imshow(img, cmap="viridis")
         ax.set_title(titles[i])
         ax.axis("off")
+    if super_title is not None:
+        fig.suptitle(super_title)
     plt.tight_layout()
-
-
-def tensor_to_numpy(sample: torch.Tensor) -> np.ndarray:
-    """
-    Converts torch tensor to numpy array with normalization.
-    """
-    if sample.device.type != "cpu":
-        sample = sample.cpu()
-    if sample.ndim == 4:
-        sample = sample.permute(0, 2, 3, 1)
-        sample = sample.squeeze()
-    sample = sample.numpy()
-
-    sample_min = np.min(sample)
-    sample_max = np.max(sample)
-    sample_normalized = (sample - sample_min) / (sample_max - sample_min) * 255
-    return sample_normalized.astype(np.uint8)
-
-
-def sample_to_pil(sample: torch.Tensor) -> Image.Image:
-    """
-    Converts a torch tensor to a PIL image.
-    """
-    image_processed = tensor_to_numpy(sample)
-    return Image.fromarray(image_processed)
 
 
 def display_samples(
     samples: Union[List[torch.Tensor], torch.Tensor],
     titles: List[str] = [],
     num_cols: int = 1,
+    super_title: Optional[str] = None,
 ) -> None:
     """
     Displays the provided image samples.
@@ -109,11 +97,17 @@ def display_samples(
     if isinstance(samples, torch.Tensor):
         samples = [samples]
 
-    image_pils = [sample_to_pil(sample) for sample in samples]
+    transform = get_reverse_image_transform()
+    image_pils = [reverse_transform(sample, transform) for sample in samples]
 
     if num_cols > 1:
-        show_images_in_a_grid(image_pils, titles=titles, num_cols=num_cols)
+        show_images_in_a_grid(
+            image_pils, titles=titles, num_cols=num_cols, super_title=super_title
+        )
     else:
+        if super_title:
+            print(super_title)
+            print("-" * len(super_title))  # add a separator line
         for title, img_pil in zip_longest(titles, image_pils, fillvalue=""):
             print(f"Title: {title}")
             plt.figure()
