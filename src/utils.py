@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 import torch
-from diffusers import DDIMPipeline
+from diffusers import UNet2DModel
 from itertools import zip_longest
 
 from transforms import (
@@ -28,18 +28,18 @@ def get_device(verbose: bool = False) -> torch.device:
 
 
 def generate_random_samples(
-    num_samples: int, model: DDIMPipeline
+    num_samples: int, unet: UNet2DModel
 ) -> Union[torch.Tensor, List[torch.Tensor]]:
     if num_samples == 1:
         return torch.randn(
             1,
-            model.unet.config.in_channels,  # type: ignore
-            model.unet.config.sample_size,  # type: ignore
-            model.unet.config.sample_size,  # type: ignore
+            unet.config.in_channels,  # type: ignore
+            unet.config.sample_size,  # type: ignore
+            unet.config.sample_size,  # type: ignore
         ).to("cuda")
     else:
         return [
-            generate_random_samples(1, model) for _ in range(num_samples)
+            generate_random_samples(1, unet) for _ in range(num_samples)
         ]  # type: ignore
 
 
@@ -113,18 +113,6 @@ def display_samples(
             plt.figure()
             display(img_pil)
             plt.show()
-
-
-# def imshow(img, title=""):
-# img = img.to("cpu")
-# img = img.permute(1, 2, 0, 3)
-# img = img.reshape(img.shape[0], img.shape[1], -1)
-# img = img / 2 + 0.5     # unnormalize
-# img = torch.clamp(img, min=0., max=1.)
-# npimg = img.numpy()
-# plt.imshow(np.transpose(npimg, (1, 2, 0)))
-# plt.title(title)
-# plt.show()
 
 
 def print_statistics(x_t: torch.Tensor, name: Optional[str] = None) -> None:
