@@ -1,4 +1,4 @@
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Tuple
 import torch
 from diffusers import DiffusionPipeline, DDIMPipeline  # type: ignore
 
@@ -8,15 +8,15 @@ from mask_handler import MaskHandler
 
 class PixelSpacePipeline(DDIMPipeline):
     def __init__(self, pipeline: DDIMPipeline):
-        self.scheduler = pipeline.scheduler
-        self.unet = pipeline.unet
+        self.scheduler = pipeline.scheduler  # type: ignore
+        self.unet = pipeline.unet  # type: ignore
 
 
 class LatentPipeline(DiffusionPipeline):
     def __init__(self, pipeline: DiffusionPipeline):
-        self.scheduler = pipeline.scheduler
-        self.unet = pipeline.unet
-        self.vqvae = pipeline.vqvae
+        self.scheduler = pipeline.scheduler  # type: ignore
+        self.unet = pipeline.unet  # type: ignore
+        self.vqvae = pipeline.vqvae  # type: ignore
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         return self.vqvae.encode(x)
@@ -32,7 +32,9 @@ class DiffusionSynthesizer:
         self.unet = pipeline.unet
         self.mask_handler: Optional[MaskHandler] = None
 
-    def get_image_latents(self, x_0: torch.Tensor):
+    def get_image_latents(
+        self, x_0: torch.Tensor
+    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         if isinstance(self.pipeline, LatentPipeline):
             z_0 = self.pipeline.encode(x_0)
             z_t, model_outputs = reverse_inverse_process(
@@ -52,19 +54,25 @@ class DiffusionSynthesizer:
         step_idx: int,
         step_time: int,
         model_outputs: Optional[List] = [],
+        guidance_scale: float = 1.0,
     ):
         with torch.no_grad():
             # 1. predict noise model output
+            input_image = torch.cat([input_image] * 2)
             model_output = self.unet(input_image, step_time).sample
+            model_output_res, model_output_no_res = torch.chunk(model_output, 2)
 
             if (
                 self.mask_handler
                 and self.mask_handler.mask is not None
                 and model_outputs
             ):
-                model_output = self.mask_handler.apply_mask(
-                    self.mask_handler.mask, model_outputs[step_idx], model_output
+                model_output_res = self.mask_handler.apply_mask(
+                    self.mask_handler.mask, model_outputs[step_idx], model_output_res
                 )
+            model_output = model_output_no_res + guidance_scale * (
+                model_output_res - model_output_no_res
+            )
 
         return model_output
 
@@ -75,12 +83,13 @@ class DiffusionSynthesizer:
         eta: float = 0,
         model_outputs: Optional[List] = [],
         attr_func: Optional[AttrFunc] = None,
-    ) -> Union[torch.Tensor, List[torch.Tensor]]:
+        guidance_scale: float = 0.0,
+    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         new_model_outputs = list()
 
         for step_idx, step_time in enumerate(self.scheduler.timesteps):
             model_output = self.predict_model_output(
-                x_t, step_idx, step_time, model_outputs
+                x_t, step_idx, step_time, model_outputs, guidance_scale
             )
 
             if eta > 0 and zs:
@@ -90,12 +99,13 @@ class DiffusionSynthesizer:
                 variance_noise = None
 
             # nudge the latent variable x_t using the attr_func
-            if attr_func:
+            if attr_func is not None:
                 x_t = attr_func.apply(
                     x_t,
                     model_output,
                     step_time,
-                    pipeline=self.pipeline,
+                    step_idx,
+                    scheduler=self.scheduler,
                 )
 
             # 2. predict previous mean of image x_t-1 and add variance depending on eta
@@ -110,9 +120,6 @@ class DiffusionSynthesizer:
         if isinstance(self.pipeline, LatentPipeline):
             x_t = self.pipeline.decode(x_t)
 
-        # x_t = (x_t / 2 + 0.5).clamp(0, 1)
-        # x_t = x_t.cpu().permute(0, 2, 3, 1).numpy()
-
         return x_t, new_model_outputs
 
 
@@ -121,7 +128,7 @@ def reverse_inverse_process(
     x_t: torch.Tensor,
     pipeline: Union[LatentPipeline, PixelSpacePipeline],
     inversion: bool = False,
-) -> Union[torch.Tensor, List[torch.Tensor]]:
+) -> Tuple[torch.Tensor, List[torch.Tensor]]:
     scheduler = pipeline.scheduler
     timesteps = scheduler.timesteps
     model_outputs = list()
@@ -132,58 +139,42 @@ def reverse_inverse_process(
     for step_idx, step_time in enumerate(timesteps):
         with torch.no_grad():
             model_output = pipeline.unet(x_t, step_time).sample
+        model_outputs.append(model_output)
+
+        # compute alphas, betas
+        alpha_prod_t = scheduler.alphas_cumprod[step_time]
+        beta_prod_t = 1 - alpha_prod_t
+
+        # Compute predicted x_0
+        p_t = (x_t - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
+        if scheduler.config.clip_sample:
+            p_t = p_t.clamp(
+                -scheduler.config.clip_sample_range, scheduler.config.clip_sample_range
+            )
 
         if inversion:
             next_timestep = min(
                 scheduler.config.num_train_timesteps - 2,
                 step_time + scheduler.config.num_train_timesteps // scheduler.num_,
             )
-            (
-                step_time
-                + scheduler.config.num_train_timesteps // scheduler.num_inference_steps
-            )
-        else:
-            prev_timestep = (
-                step_time
-                - scheduler.config.num_train_timesteps // scheduler.num_inference_steps
-            )
-
-        # compute alphas, betas
-        alpha_prod_t = scheduler.alphas_cumprod[step_time]
-        if inversion:
             alpha_prod_t_next = (
                 scheduler.alphas_cumprod[next_timestep]
                 if next_timestep >= 0
                 else scheduler.final_alpha_cumprod
             )
+            pred_sample_direction = (1 - alpha_prod_t_next) ** (0.5) * model_output
+            x_t = alpha_prod_t_next ** (0.5) * p_t + pred_sample_direction
         else:
+            prev_timestep = (
+                step_time
+                - scheduler.config.num_train_timesteps // scheduler.num_inference_steps
+            )
             alpha_prod_t_prev = (
                 scheduler.alphas_cumprod[prev_timestep]
                 if prev_timestep >= 0
                 else scheduler.final_alpha_cumprod
             )
-
-        beta_prod_t = 1 - alpha_prod_t
-
-        # Compute predicted x_0
-        p_t = (x_t - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
-
-        if scheduler.config.clip_sample:
-            p_t = p_t.clamp(
-                -scheduler.config.clip_sample_range, scheduler.config.clip_sample_range
-            )
-
-        # pred sample direction
-        if inversion:
-            pred_sample_direction = (1 - alpha_prod_t_next) ** (0.5) * model_output
-        else:
             pred_sample_direction = (1 - alpha_prod_t_prev) ** (0.5) * model_output
-
-        if inversion:
-            x_t = alpha_prod_t_next ** (0.5) * p_t + pred_sample_direction
-        else:
             x_t = alpha_prod_t_prev ** (0.5) * p_t + pred_sample_direction
-
-        model_outputs.append(model_output)
 
     return x_t, model_outputs
