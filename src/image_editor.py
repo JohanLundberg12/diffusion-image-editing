@@ -36,7 +36,12 @@ class ImageEditor:
         resynthesize: bool = False,
         attr_func: Optional[AttrFunc] = None,
         apply_mask_with_attr_func: bool = False,
-    ):
+    ) -> Tuple[
+        torch.Tensor,
+        List[torch.Tensor],
+        Union[torch.Tensor, None],
+        Union[torch.Tensor, None],
+    ]:
         # given a real image, the latent variable x_t is inferred
         # x_0 and the residuals are then obtained from the diffusion model
         # the edit is then applied to the latent variable x_t and residuals
@@ -48,7 +53,7 @@ class ImageEditor:
             attr_func=attr_func,
         )
 
-        x_edit, model_outputs = self.edit_image(
+        x_edit, model_outputs, segmentation, mask = self.edit_image(
             x_0=x_0,
             x_t=x_t,
             eta=0,
@@ -59,7 +64,7 @@ class ImageEditor:
             apply_mask_with_attr_func=apply_mask_with_attr_func,
         )
 
-        return x_edit, model_outputs
+        return x_edit, model_outputs, segmentation, mask
 
     def edit_image(
         self,
@@ -72,7 +77,13 @@ class ImageEditor:
         resynthesize: bool = False,
         attr_func: Optional[AttrFunc] = None,
         apply_mask_with_attr_func: bool = False,
-    ):
+        guidance_scale: float = 1.0,
+    ) -> Tuple[
+        torch.Tensor,
+        List[torch.Tensor],
+        Union[torch.Tensor, None],
+        Union[torch.Tensor, None],
+    ]:
         # 1. apply mask on cls area to change it
         # 2. apply a strategy, with masking, i.e. to make eyes blue, without resynthesizing cls area
         # 3. apply a strategy, nothing else, i.e. apply the strategy to the whole image
@@ -97,6 +108,7 @@ class ImageEditor:
             eta=eta,
             model_outputs=model_outputs,
             attr_func=attr_func,
+            guidance_scale=guidance_scale,
         )
 
         return (
@@ -111,8 +123,7 @@ class ImageEditor:
         # that could be a masking operation or applying a strategy to x_t with the mask
         use_mask: bool = True if classes else False
         if use_mask:
-            if self.mask_handler.mask is None:
-                self.mask_handler.create_mask(image, classes=classes)
+            self.mask_handler.create_mask(image, classes=classes)
 
     def determine_what_to_edit(
         self, x_t, zs, eta, resynthesize
@@ -121,15 +132,19 @@ class ImageEditor:
         # if resynthesize, then x_t and zso are changed
         if isinstance(self.mask_handler.mask, torch.Tensor):
             if resynthesize:
-                x_tv = generate_random_samples(1, self.image_synthesizer.pipeline)
-                x_t = self.mask_handler.apply_mask(self.mask_handler.mask, x_t, x_tv)
+                x_tv = generate_random_samples(1, self.image_synthesizer.pipeline.unet)
+
+                if isinstance(x_tv, torch.Tensor):
+                    x_t = self.mask_handler.apply_mask(
+                        self.mask_handler.mask, x_t, x_tv
+                    )
 
                 if eta > 0:
                     if not zs:
                         raise ValueError("eta > 0 and zs is empty")
                     zsv = generate_random_samples(
                         self.image_synthesizer.pipeline.scheduler.num_inference_steps,
-                        self.image_synthesizer.pipeline,
+                        self.image_synthesizer.pipeline.unet,
                     )
                     zs = [
                         self.mask_handler.apply_mask(self.mask_handler.mask, zo, zv)
@@ -138,7 +153,9 @@ class ImageEditor:
         return x_t, zs
 
     def determine_how_to_edit(
-        self, attr_func: AttrFunc, apply_mask_with_attr_func: bool
+        self,
+        attr_func: Optional[AttrFunc] = None,
+        apply_mask_with_attr_func: bool = False,
     ) -> Union[AttrFunc, None]:
         # if a strategy is specified and a mask is created and the strategy
         # is intended to be used with a mask, then we set the mask on the strategy
