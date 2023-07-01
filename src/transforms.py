@@ -69,7 +69,7 @@ def reverse_transform(
     elif len(image_tensor.shape) == 3:
         pass  # expected to have dimensions (C, H, W)
     elif len(image_tensor.shape) == 2:
-        return transforms.functional.to_pil_image(image_tensor.cpu().to(torch.uint8))
+        return transforms.ToPILImage()(image_tensor.cpu().to(torch.uint8))
     else:
         raise ValueError(
             f"Expected image tensor to have 2, 3 or 4 dimensions, but got {len(image_tensor.shape)}"
