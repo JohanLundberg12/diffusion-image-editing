@@ -11,12 +11,11 @@ def input_t(input: torch.Tensor) -> torch.Tensor:
     return (2 * input - 1).clamp(-1, 1)  # TODO: clamp (-1, 1) ?
 
 
-def get_image_transform(image_size: int) -> Callable[[Image.Image], torch.Tensor]:
+def get_image_transform() -> Callable[[Image.Image], torch.Tensor]:
     """Returns a transform that scales the image pixel values to [-1, 1]"""
 
     transform = transforms.Compose(
         [
-            transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),  # Shape: HWC, Scales data into [0,1] by div / 255, so does normalization
             transforms.Lambda(input_t),
         ]
