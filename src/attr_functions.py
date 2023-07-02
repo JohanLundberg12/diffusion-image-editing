@@ -1,13 +1,12 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 import torch
-from diffusers import DDIMPipeline  # type: ignore
+from diffusers import DDIMScheduler
 
 from image_preprocess import ImagePreprocess
 from DDIMSegmentation.model import BiSeNet
 
 
-# l2 norm of x and y
 def l2_norm(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Calculate the l2 norm between two tensors."""
     return torch.sqrt(torch.sum((x - y) ** 2))
@@ -37,10 +36,10 @@ class AttrFunc(ABC):
     def __init__(
         self,
         loss_scale: float = 1.0,
+        stop_at: Optional[int] = None,
     ) -> None:
         self.loss_scale = loss_scale
-        self.mask: Optional[torch.Tensor] = None
-        self.x_0 = None
+        self.stop_at = stop_at
 
     @property
     def name(self) -> str:
@@ -54,34 +53,34 @@ class AttrFunc(ABC):
 
     def apply(
         self,
-        input_image,
-        model_output,
-        step_time: int,
-        pipeline: DDIMPipeline,
+        input_image: torch.Tensor,
+        model_output: torch.Tensor,
+        timestep: int,
+        step_idx: int,
+        scheduler: DDIMScheduler,
+        mask: Optional[torch.Tensor] = None,
+        x_0: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Apply the attribute function strategy to update the input image."""
 
+        if self.stop_at is not None and step_idx >= self.stop_at:
+            return input_image
         input_image = input_image.detach().requires_grad_(True)
 
         # p_t prediction (prediction of x_0)
-        alpha_prod_t = pipeline.scheduler.alphas_cumprod[step_time]  # type: ignore
+        alpha_prod_t = scheduler.alphas_cumprod[timestep]  # type: ignore
         beta_prod_t = 1 - alpha_prod_t
         p_t = (input_image - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (
             0.5
         )
 
-        if self.mask is not None:
-            attr_loss = self.loss(self.mask * p_t) + l2_norm(
-                1 - self.mask * p_t, self.x_0
-            )
+        if mask is not None and x_0 is not None:
+            attr_loss = self.loss(mask * p_t) + l2_norm(1 - mask * p_t, x_0)
         else:
             attr_loss = self.loss(p_t)
         attr_loss = attr_loss * self.loss_scale
 
         attr_grad = -torch.autograd.grad(attr_loss, input_image)[0]
-
-        # if self.mask is not None:
-        # attr_grad = attr_grad * self.mask
 
         input_image = input_image.detach() + attr_grad * alpha_prod_t**2
 
