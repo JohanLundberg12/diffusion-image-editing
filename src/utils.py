@@ -14,6 +14,20 @@ from transforms import (
 )
 
 
+def apply_mask(
+    mask: torch.Tensor,
+    zo: Union[torch.Tensor, List[torch.Tensor]],
+    zv: Union[torch.Tensor, List[torch.Tensor]],
+) -> Union[torch.Tensor, List[torch.Tensor]]:
+    if isinstance(zo, List) and isinstance(zv, List):
+        return [mask * zv_i + ((1 - mask) * zo_i) for zv_i, zo_i in zip(zv, zo)]
+    elif isinstance(zo, torch.Tensor) and isinstance(zv, torch.Tensor):
+        return mask * zv + ((1 - mask) * zo)
+
+    else:
+        raise TypeError("zo and zv must be of the same type")
+
+
 def get_device(verbose: bool = False) -> torch.device:
     """Returns the device to be used for training."""
     if torch.cuda.is_available():
@@ -28,18 +42,22 @@ def get_device(verbose: bool = False) -> torch.device:
 
 
 def generate_random_samples(
-    num_samples: int, unet: UNet2DModel
+    num_samples: int, unet: UNet2DModel, generator: Optional[torch.Generator] = None
 ) -> Union[torch.Tensor, List[torch.Tensor]]:
     if num_samples == 1:
         return torch.randn(
-            1,
-            unet.config.in_channels,  # type: ignore
-            unet.config.sample_size,  # type: ignore
-            unet.config.sample_size,  # type: ignore
+            (
+                1,
+                unet.config.in_channels,  # type: ignore
+                unet.config.sample_size,  # type: ignore
+                unet.config.sample_size,  # type: ignore
+            ),
+            generator=generator,  # type: ignore
         ).to("cuda")
     else:
         return [
-            generate_random_samples(1, unet) for _ in range(num_samples)
+            generate_random_samples(1, unet, generator=generator)
+            for _ in range(num_samples)
         ]  # type: ignore
 
 
@@ -113,13 +131,3 @@ def display_samples(
             plt.figure()
             display(img_pil)
             plt.show()
-
-
-def print_statistics(x_t: torch.Tensor, name: Optional[str] = None) -> None:
-    if name is not None:
-        print(f"Statistics for {name}")
-
-    print(f"Mean of {name}: {x_t.mean():.2f}")
-    print(f"Std of {name}: {x_t.std():.2f}")
-    print(f"Min of {name}: {x_t.min():.2f}")
-    print(f"Max of {name}: {x_t.max():.2f}")
