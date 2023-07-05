@@ -1,5 +1,6 @@
 from typing import List, Optional, Tuple
 import torch
+from PIL import Image
 
 from diffusers import DiffusionPipeline, UNet2DModel, VQModel, DDIMScheduler
 
@@ -18,15 +19,18 @@ class DiffusionSynthesizer(DiffusionPipeline):
         self.scheduler = scheduler
         self.vae = vae
 
-    def encode(self, latent: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            latent = self.vae.encode(latent)
+    def encode(self, latent: torch.Tensor) -> torch.FloatTensor:
+        if self.vae is not None:
+            with torch.no_grad():
+                latent = latent.to(dtype=torch.float32)
+                latent = self.vae.encode(latent)[0]
 
         return latent
 
-    def decode(self, latent) -> torch.Tensor:
-        with torch.no_grad():
-            latent = self.vae.decode(latent)
+    def decode(self, latent: torch.FloatTensor) -> torch.FloatTensor:
+        if self.vae is not None:
+            with torch.no_grad():
+                latent = self.vae.decode(latent)[0]
 
         return latent
 
@@ -41,7 +45,7 @@ class DiffusionSynthesizer(DiffusionPipeline):
         guidance: Optional[float] = 1.0,
         mask: Optional[torch.Tensor] = None,
         apply_mask_with_attr_func: Optional[bool] = False,
-    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+    ) -> Tuple[Image.Image, List[torch.Tensor]]:
         new_model_outputs = list()
 
         for step_idx, timestep in enumerate(self.scheduler.timesteps):
@@ -100,6 +104,6 @@ class DiffusionSynthesizer(DiffusionPipeline):
         if self.vae is not None:
             xt = self.decode(xt)
 
-        xt = reverse_transform(xt, get_reverse_image_transform())
+        img = reverse_transform(xt, get_reverse_image_transform())
 
-        return xt, new_model_outputs
+        return img, new_model_outputs
