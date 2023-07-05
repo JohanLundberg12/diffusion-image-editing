@@ -19,6 +19,8 @@ from mask_creator import MaskCreator
 from transforms import (
     get_image_transform,
     image_transform,
+    get_reverse_image_transform,
+    reverse_transform,
 )
 from utils import apply_mask, generate_random_samples
 
@@ -82,10 +84,23 @@ def reverse_inverse_process(
 
 @dataclass
 class EditorOutput(BaseOutput):
-    xt: Image.Image
-    model_outputs: List[torch.Tensor]
-    segmentation: torch.Tensor
-    mask: torch.Tensor
+    imgs: Image.Image
+    residuals: List[torch.Tensor]
+    segmentation: torch.Tensor | None
+    mask: torch.Tensor | None
+
+    def __getitem__(self, k):
+        if isinstance(k, str):
+            inner_dict = dict(self.items())
+
+            if k == "segmentation" or k == "mask":
+                reverse_transform_fn = get_reverse_image_transform()
+
+                return reverse_transform(inner_dict[k], reverse_transform_fn)
+            else:
+                return inner_dict[k]
+        else:
+            return self.to_tuple()[k]
 
 
 class SegDiffEditPipe(DiffusionSynthesizer):
@@ -127,7 +142,7 @@ class SegDiffEditPipe(DiffusionSynthesizer):
             xtv = generate_random_samples(1, self.unet)
 
             if isinstance(xt, torch.Tensor):
-                xt = apply_mask(mask, xt, xtv)
+                xt = apply_mask(mask, xt, xtv)  # type: ignore
 
             if eta > 0:
                 if not zs:
@@ -136,11 +151,11 @@ class SegDiffEditPipe(DiffusionSynthesizer):
                     self.scheduler.num_inference_steps,
                     self.unet,
                 )
-                zs = apply_mask(mask, zs, zsv)
+                zs = apply_mask(mask, zs, zsv)  # type: ignore
 
         return xt, zs
 
-    def __call__(
+    def edit(
         self,
         img: Image.Image,
         xt: torch.Tensor,
@@ -153,7 +168,7 @@ class SegDiffEditPipe(DiffusionSynthesizer):
         apply_mask_with_attr_func: Optional[bool] = False,
         guidance: Optional[float] = 1.0,
         # steps: Optional[int] = 50,
-    ) -> Image.Image:
+    ) -> EditorOutput:
         # 1. apply mask on cls area to change it
         # 2. apply a strategy, with masking, i.e. to make eyes blue, without resynthesizing cls area
         # 3. apply a strategy, nothing else, i.e. apply the strategy to the whole image
@@ -196,7 +211,7 @@ class SegDiffEditPipe(DiffusionSynthesizer):
         # change xt and zs if eta > 0 (zs must be provided), and only if resynthesize is True
         xt, zs = self.determine_what_to_edit(xt, zs, eta, resynthesize, mask)
 
-        xt, model_outputs = self.synthesize_image(
+        img, model_outputs = self.synthesize_image(
             xt=xt,
             x_0=latent,
             zs=zs,
@@ -208,6 +223,4 @@ class SegDiffEditPipe(DiffusionSynthesizer):
             apply_mask_with_attr_func=apply_mask_with_attr_func,
         )
 
-        # return xt, mask
-
-        return EditorOutput(xt, model_outputs, segmentation, mask)
+        return EditorOutput(img, model_outputs, segmentation, mask)
