@@ -29,11 +29,7 @@ def apply_mask(
 
 
 def get_device(verbose: bool = False) -> torch.device:
-    """Returns the device to be used for training."""
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if verbose:
         print(f"Using {device} as backend")
