@@ -2,6 +2,7 @@ import torch
 
 from image_preprocess import ImagePreprocess
 from Morphology import Dilation2d
+from utils import get_device
 
 
 class MaskCreator:
@@ -11,8 +12,9 @@ class MaskCreator:
         dilate_mask: bool = True,
     ) -> None:
         self.preprocess = preprocess
+        self.device = get_device()
         self.dilation_method = (
-            Dilation2d(1, 1, 7, soft_max=False).to("cuda") if dilate_mask else None
+            Dilation2d(1, 1, 7, soft_max=False).to(self.device) if dilate_mask else None
         )
 
     def create_mask(self, segmentation: torch.Tensor, classes: list) -> torch.Tensor:
@@ -41,4 +43,4 @@ class MaskCreator:
         mask = torch.cat(
             [mask.unsqueeze(0), mask.unsqueeze(0), mask.unsqueeze(0)]
         ).unsqueeze(0)
-        return mask.to("cuda")
+        return mask.to(self.device)

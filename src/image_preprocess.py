@@ -2,6 +2,8 @@ from typing import Tuple
 import torch
 import torchvision.transforms as transforms
 
+from utils import get_device
+
 
 class ImagePreprocess:
     def __init__(
@@ -9,6 +11,7 @@ class ImagePreprocess:
         image_size: Tuple[int, int] = (512, 512),
         resize_size: Tuple[int, int] = (256, 256),
     ) -> None:
+        self.device = get_device()
         self.to_tensor = transforms.Compose(
             [
                 transforms.Resize(image_size),
@@ -21,7 +24,7 @@ class ImagePreprocess:
         self.resize = transforms.Resize(resize_size)
 
     def process(self, image: torch.Tensor) -> torch.Tensor:
-        return self.to_tensor(image).to("cuda")
+        return self.to_tensor(image).to(self.device)
 
     def resize_mask(self, mask: torch.Tensor) -> torch.Tensor:
         mask = self.resize(mask.unsqueeze(0))
