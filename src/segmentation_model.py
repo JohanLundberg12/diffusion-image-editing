@@ -1,7 +1,7 @@
 import torch
 
 from image_preprocess import ImagePreprocess
-from DDIMSegmentation.model import BiSeNet
+from Segmentation.model import BiSeNet
 
 
 class SegmentationModel:
