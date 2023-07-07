@@ -23,7 +23,6 @@ def apply_mask(
         return [mask * zv_i + ((1 - mask) * zo_i) for zv_i, zo_i in zip(zv, zo)]
     elif isinstance(zo, torch.Tensor) and isinstance(zv, torch.Tensor):
         return mask * zv + ((1 - mask) * zo)
-
     else:
         raise TypeError("zo and zv must be of the same type")
 

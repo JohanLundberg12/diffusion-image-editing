@@ -1,6 +1,6 @@
 import torch
+from torchvision import transforms
 
-from image_preprocess import ImagePreprocess
 from Morphology import Dilation2d
 from utils import get_device
 
@@ -8,14 +8,16 @@ from utils import get_device
 class MaskCreator:
     def __init__(
         self,
-        preprocess: ImagePreprocess,
         dilate_mask: bool = True,
+        resize_size: tuple = (256, 256),
     ) -> None:
-        self.preprocess = preprocess
         self.device = get_device()
         self.dilation_method = (
             Dilation2d(1, 1, 7, soft_max=False).to(self.device) if dilate_mask else None
         )
+        # 256, 256 in the case of pixel space editing
+        # 64, 64 in the case of latent space editing
+        self.resize = transforms.Resize(resize_size)
 
     def create_mask(self, segmentation: torch.Tensor, classes: list) -> torch.Tensor:
         masks = [
@@ -39,8 +41,15 @@ class MaskCreator:
         return mask
 
     def postprocess_mask(self, mask: torch.Tensor) -> torch.Tensor:
-        mask = self.preprocess.resize_mask(mask)
+        mask = self.resize_mask(mask)
         mask = torch.cat(
             [mask.unsqueeze(0), mask.unsqueeze(0), mask.unsqueeze(0)]
         ).unsqueeze(0)
         return mask.to(self.device)
+
+    def resize_mask(self, mask: torch.Tensor) -> torch.Tensor:
+        mask = self.resize(mask.unsqueeze(0))
+        mask[mask < 1] = 0
+        mask[mask > 1] = 1
+        mask = mask.squeeze()
+        return mask
