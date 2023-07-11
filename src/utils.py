@@ -7,11 +7,9 @@ from PIL import Image
 import torch
 from diffusers import UNet2DModel
 from itertools import zip_longest
+from tqdm import tqdm
 
-from transforms import (
-    reverse_transform,
-    get_reverse_image_transform,
-)
+from transforms import tensor_to_pil
 
 
 def apply_mask(
@@ -110,8 +108,7 @@ def display_samples(
     if isinstance(samples, torch.Tensor):
         samples = [samples]
 
-    transform = get_reverse_image_transform()
-    image_pils = [reverse_transform(sample, transform) for sample in samples]
+    image_pils = tensor_to_pil(samples)
 
     if num_cols > 1:
         show_images_in_a_grid(
@@ -126,3 +123,11 @@ def display_samples(
             plt.figure()
             display(img_pil)
             plt.show()
+
+
+def create_progress_bar(steps: torch.Tensor | range, show_progbar: bool):
+    enumerator = enumerate(steps)
+    if show_progbar:
+        return tqdm(enumerator)
+    else:
+        return enumerator
