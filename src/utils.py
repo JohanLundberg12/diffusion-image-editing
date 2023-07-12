@@ -131,3 +131,9 @@ def create_progress_bar(steps: torch.Tensor | range, show_progbar: bool):
         return tqdm(enumerator)
     else:
         return enumerator
+
+
+def set_seed(seed: int | None) -> torch.Generator:
+    if seed is None:
+        seed = int(torch.randint(int(1e6), (1,)))
+    return torch.manual_seed(seed)
