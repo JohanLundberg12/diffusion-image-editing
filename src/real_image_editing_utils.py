@@ -3,7 +3,7 @@ import torch
 from PIL import Image
 
 from alignment import align_face
-from diffusion import DiffusionModelFactory
+from diffusion_model_factory import DiffusionModelFactory
 
 from transforms import pil_to_tensor
 
@@ -74,10 +74,7 @@ def reverse_inverse_process(x_t, model, residuals=None, inversion=False):
 
 
 def compare_reverse_inverse_process_to_pipeline_synthesis(x_t: torch.Tensor):
-    factory = DiffusionModelFactory(
-        device="cuda",
-        timesteps=50,
-    )
+    factory = DiffusionModelFactory()
     pipeline = factory.create_model(name="ddpm")
 
     x_0_gen, _ = reverse_inverse_process(x_t, pipeline, inversion=False)
