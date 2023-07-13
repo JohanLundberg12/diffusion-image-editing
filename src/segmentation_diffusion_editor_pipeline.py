@@ -1,145 +1,122 @@
 from dataclasses import dataclass
-from typing import List, Optional, Union, Tuple
+from typing import List
 
 import torch
 from PIL import Image
 
-from diffusers import (
-    DDIMScheduler,
-    UNet2DModel,
-    VQModel,
-)
 from diffusers.utils import BaseOutput
 
 from attr_functions import AttrFunc
-from diffusion_synthesizer import DiffusionSynthesizer
+from diffusion import DiffusionSynthesizer
 from segmentation_model import SegmentationModel
 from mask_creator import MaskCreator
-
-from transforms import (
-    get_image_transform,
-    image_transform,
-    get_reverse_image_transform,
-    reverse_transform,
-)
-from utils import apply_mask, generate_random_samples
+from stable_diffusion_wrapper import StableDiffusionWrapper
 
 
-# should I take model_outputs as a parameter in case I want to regenerate a particular image?
-def reverse_inverse_process(
-    x_t: torch.Tensor,
-    unet: UNet2DModel,
-    scheduler: DDIMScheduler,
-    inversion: bool = False,
-) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-    timesteps = scheduler.timesteps
-    model_outputs = list()
-
-    if inversion:
-        timesteps = reversed(timesteps)
-
-    for step_idx, step_time in enumerate(timesteps):
-        with torch.no_grad():
-            model_output = unet(x_t, step_time).sample
-        model_outputs.append(model_output)
-
-        # compute alphas, betas
-        alpha_prod_t = scheduler.alphas_cumprod[step_time]
-        beta_prod_t = 1 - alpha_prod_t
-
-        # Compute predicted x_0
-        p_t = (x_t - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
-        if scheduler.config.clip_sample:
-            p_t = p_t.clamp(
-                -scheduler.config.clip_sample_range, scheduler.config.clip_sample_range
-            )
-
-        if inversion:
-            next_timestep = min(
-                scheduler.config.num_train_timesteps - 2,
-                step_time + scheduler.config.num_train_timesteps // scheduler.num_,
-            )
-            alpha_prod_t_next = (
-                scheduler.alphas_cumprod[next_timestep]
-                if next_timestep >= 0
-                else scheduler.final_alpha_cumprod
-            )
-            pred_sample_direction = (1 - alpha_prod_t_next) ** (0.5) * model_output
-            x_t = alpha_prod_t_next ** (0.5) * p_t + pred_sample_direction
-        else:
-            prev_timestep = (
-                step_time
-                - scheduler.config.num_train_timesteps // scheduler.num_inference_steps
-            )
-            alpha_prod_t_prev = (
-                scheduler.alphas_cumprod[prev_timestep]
-                if prev_timestep >= 0
-                else scheduler.final_alpha_cumprod
-            )
-            pred_sample_direction = (1 - alpha_prod_t_prev) ** (0.5) * model_output
-            x_t = alpha_prod_t_prev ** (0.5) * p_t + pred_sample_direction
-
-    return x_t, model_outputs
+from transforms import tensor_to_pil, pil_to_tensor
+from utils import apply_mask, get_device, generate_random_samples
+from real_image_editing_utils import reverse_inverse_process
 
 
 @dataclass
 class EditorOutput(BaseOutput):
     imgs: Image.Image
-    residuals: List[torch.Tensor]
-    segmentation: torch.Tensor | None
-    mask: torch.Tensor | None
-
-    def __getitem__(self, k):
-        if isinstance(k, str):
-            inner_dict = dict(self.items())
-
-            if k == "segmentation" or k == "mask":
-                reverse_transform_fn = get_reverse_image_transform()
-
-                return reverse_transform(inner_dict[k], reverse_transform_fn)
-            else:
-                return inner_dict[k]
-        else:
-            return self.to_tuple()[k]
+    pred_original_samples: List[Image.Image]
+    model_outputs: List[torch.Tensor]
+    segmentation: Image.Image | None
+    mask: Image.Image | None
 
 
-class SegDiffEditPipe(DiffusionSynthesizer):
+class SegDiffEditPipeline:
     def __init__(
         self,
-        unet: UNet2DModel,
-        scheduler: DDIMScheduler,
+        diffusion_wrapper: DiffusionSynthesizer | StableDiffusionWrapper,
         segmentation_model: SegmentationModel,
-        mask_creator: MaskCreator,
-        vae: Optional[VQModel] = None,
     ):
-        self.unet = unet
-        self.scheduler = scheduler
-        self.vae = vae
+        self.diffusion_wrapper = diffusion_wrapper
         self.segmentation_model = segmentation_model
-        self.mask_creator = mask_creator
+        self.device = get_device()
 
-    def determine_where_to_edit(self, image, classes) -> Union[None, torch.Tensor]:
-        # if a class is specified, it means we should do something with a mask
-        # that could be a masking operation or applying a attr_func to x_t with the mask
+    def edit_image(
+        self,
+        img: Image.Image,
+        xt: torch.Tensor | None,
+        model_outputs: List[torch.Tensor] | None,
+        eta: float = 0,
+        zs: List[torch.Tensor] = [],
+        classes: List[int] = [],
+        resynthesize: bool = False,
+        attr_func: AttrFunc | None = None,
+        apply_mask_with_attr_func: bool = False,
+        dilate_mask: bool = False,
+    ) -> EditorOutput:
+        # 1. apply mask on cls area to change it (resynthesize or not)
+        # 2. apply a strategy, with masking, i.e. to make eyes blue
+        # 3. apply a strategy, nothing else, i.e. apply the strategy to the whole image
+        # If you want to resynthesize the cls area and make a color change, it is
+        # better to first resynthesize the area to obtain a new x_0 and then edit that image with a color change.
+        # Alternatively, you can recompute the mask after some timestep t before applying the color change.
+
+        # This method does the following:
+        # 1. Segments the image.
+        # 2. Creates a mask from the segmentation.
+        # 3. If xt is none, it infers it using the reverse inverse process
+        # 4. Makes the necessary changes to xt and zs using the mask.
+        # 5. Runs the diffusion process on the modified xt and zs and
+        # applies an attr function at each timestep.
+
+        if xt is not None and not model_outputs:
+            raise ValueError(
+                "If xt is provided, model_outputs must be provided as well."
+            )
+
+        if zs and eta == 0:
+            raise ValueError("If zs is provided, eta must be > 0.")
+
+        if not resynthesize and attr_func is None:
+            raise ValueError(
+                "If resynthesize is False, attr_func must be provided. Or not edit is made"
+            )
+
+        if not classes and attr_func is None:
+            raise ValueError(
+                "If classes is empty, attr_func must be provided. Or not edit is made"
+            )
+
+        latent = pil_to_tensor(img).to(self.device)
+        segmentation = self.segmentation_model(latent)
+
+        if self.diffusion_wrapper.vae is not None:
+            latent = self.diffusion_wrapper.encode(latent)
+
+        # infer xt if not provided, mostly for real images, but also works for synthetic images
+        if xt is None and eta > 0:
+            raise NotImplementedError(
+                "If xt is not provided, eta must be 0. Reverse ODE only for deterministic path"
+            )
+        elif xt is None and eta == 0:
+            xt, model_outputs = reverse_inverse_process(
+                latent,
+                self.diffusion_wrapper.unet,
+                self.diffusion_wrapper.scheduler,
+                inversion=True,
+            )
+            model_outputs = model_outputs[::-1]
+
         use_mask: bool = True if classes else False
         if use_mask:
-            mask = self.mask_creator.create_mask(image, classes=classes)
-            return mask
+            mask_creator = MaskCreator(
+                dilate_mask=dilate_mask,
+                resize_size=self.diffusion_wrapper.data_dimensionality,
+            )
+            mask = mask_creator.create_mask(segmentation, classes=classes)
         else:
-            return None
+            mask = None
 
-    def determine_what_to_edit(
-        self,
-        xt: torch.Tensor,
-        zs: List[torch.Tensor],
-        eta: float,
-        resynthesize: bool,
-        mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        # if no mask, x_t and zs are not to be changed with a masking operation
+        # if no mask, x_t and zs are not to be changed with a masking operation but with a attr_func
         # if resynthesize, then x_t and zso are edited with a masking operation using x_tv, zsv
         if isinstance(mask, torch.Tensor) and resynthesize:
-            xtv = generate_random_samples(1, self.unet)
+            xtv = generate_random_samples(1, self.diffusion_wrapper.unet)
 
             if isinstance(xt, torch.Tensor):
                 xt = apply_mask(mask, xt, xtv)  # type: ignore
@@ -148,79 +125,57 @@ class SegDiffEditPipe(DiffusionSynthesizer):
                 if not zs:
                     raise ValueError("eta > 0 and zso is empty")
                 zsv = generate_random_samples(
-                    self.scheduler.num_inference_steps,
-                    self.unet,
+                    self.diffusion_wrapper.scheduler.num_inference_steps,
+                    self.diffusion_wrapper.unet,
                 )
                 zs = apply_mask(mask, zs, zsv)  # type: ignore
 
-        return xt, zs
+        new_model_outputs = list()
+        pred_original_samples = list()
 
-    def edit(
-        self,
-        img: Image.Image,
-        xt: torch.Tensor,
-        eta: int = 0,
-        model_outputs: List[torch.Tensor] = [],
-        zs: List[torch.Tensor] = [],
-        classes: List[int] = [],
-        resynthesize: bool = False,
-        attr_func: Optional[AttrFunc] = None,
-        apply_mask_with_attr_func: Optional[bool] = False,
-        guidance: Optional[float] = 1.0,
-        # steps: Optional[int] = 50,
-    ) -> EditorOutput:
-        # 1. apply mask on cls area to change it
-        # 2. apply a strategy, with masking, i.e. to make eyes blue, without resynthesizing cls area
-        # 3. apply a strategy, nothing else, i.e. apply the strategy to the whole image
-        # 4. apply a strategy, with masking, and resynthesize cls area with mask (this is does not work well)
-        # better to first resynthesize the area to obtain a new x_0 and then edit that image with a color change.
-        # Alternatively, you recompute the mask halfway through when pred_x_0 is of reasonable quality to then
-        # start applying the strategy to the cls area.
+        for step_idx, timestep in enumerate(self.diffusion_wrapper.scheduler.timesteps):
+            model_output = self.diffusion_wrapper.predict_model_output(xt, timestep)
+            if mask is not None and model_outputs is not None:
+                model_output = apply_mask(mask, model_outputs[step_idx], model_output)
 
-        # This method does the following:
-        # determine where to edit -> mask or not
-        # determine what to edit -> x_t, zs, eta, resynthesize
-        # determine how to edit -> strategy, apply_mask_to_strategy
-        # apply edit -> image_synthesizer.synthesize_image
+            new_model_outputs.append(model_output)
 
-        # self.scheduler.set_timesteps(steps)
-
-        # get image in tensor form
-        latent = image_transform(img, get_image_transform()).to("cuda")
-
-        # create segmentation
-        segmentation = self.segmentation_model(latent)
-
-        # create mask if necessary
-        mask = self.determine_where_to_edit(segmentation, classes)
-
-        # encode latent if working with latent diffusion model
-        if self.vae is not None:
-            latent = self.encode(latent)
-
-        # infer xt if not provided, mostly for real images, but also works for synthetic images
-        if xt is None and eta == 0:
-            xt, model_outputs = reverse_inverse_process(
-                latent,
-                self.unet,
-                self.scheduler,
-                inversion=True,
+            if attr_func is not None:
+                if apply_mask_with_attr_func and mask is not None:
+                    xt = attr_func.apply(
+                        input_image=xt,
+                        model_output=model_output,  # type: ignore
+                        timestep=timestep,  # type: ignore
+                        step_idx=step_idx,
+                        scheduler=self.diffusion_wrapper.scheduler,
+                        mask=mask,
+                        x_0=latent,
+                    )
+                else:
+                    xt = attr_func.apply(
+                        xt,
+                        model_output,  # type: ignore
+                        timestep,  # type: ignore
+                        step_idx,
+                        scheduler=self.diffusion_wrapper.scheduler,
+                        x_0=latent,
+                    )
+            variance_noise = self.diffusion_wrapper.get_variance_noise(
+                zs, step_idx, eta
             )
-            model_outputs = model_outputs[::-1]
+            xt, pred_original_sample = self.diffusion_wrapper.single_step(
+                model_output, timestep, xt, eta, variance_noise
+            )
+            pred_original_samples.append(pred_original_sample)
 
-        # change xt and zs if eta > 0 (zs must be provided), and only if resynthesize is True
-        xt, zs = self.determine_what_to_edit(xt, zs, eta, resynthesize, mask)
+        img = self.diffusion_wrapper.decode(xt)
+        pred_original_samples = torch.stack(pred_original_samples, dim=0)
+        pred_original_samples = self.diffusion_wrapper.decode(pred_original_samples)
+        img = tensor_to_pil(img)
+        pred_original_samples = tensor_to_pil(pred_original_samples)
+        segmentation = tensor_to_pil(segmentation)
+        mask = tensor_to_pil(mask) if mask is not None else None
 
-        img, model_outputs = self.synthesize_image(
-            xt=xt,
-            x_0=latent,
-            zs=zs,
-            eta=eta,
-            model_outputs=model_outputs,
-            attr_func=attr_func,
-            guidance=guidance,
-            mask=mask,
-            apply_mask_with_attr_func=apply_mask_with_attr_func,
+        return EditorOutput(
+            img, pred_original_samples, new_model_outputs, segmentation, mask
         )
-
-        return EditorOutput(img, model_outputs, segmentation, mask)
