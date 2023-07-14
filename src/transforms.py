@@ -16,7 +16,7 @@ def tensor_to_pil(tensor_imgs):
             transforms.Lambda(_scale_zero_one),
             Lambda(lambda t: t.permute(1, 2, 0)),  # CHW to HWC
             Lambda(lambda t: t * 255.0),  # back to 0-255
-            Lambda(lambda t: t.cpu().numpy().astype(np.uint8)),
+            Lambda(lambda t: t.cpu().detach().numpy().astype(np.uint8)),
             transforms.ToPILImage(),
         ]
     )
@@ -29,17 +29,14 @@ def tensor_to_pil(tensor_imgs):
 
     pil_imgs = list()
 
-    for img in tensor_imgs:
-        if len(img.shape) == 4:
-            img = img.squeeze(0)  # Reshape to (C, H, W)
-            img = transform_normal(img)
-        elif len(img.shape) == 3:
-            img = transform_normal(img)
-        elif len(img.shape) == 2:
-            img = transform_mask(img)
-
-        pil_imgs.append(img)
-
+    if tensor_imgs.dim() == 2:
+        pil_img = transform_mask(tensor_imgs)
+        pil_imgs.append(pil_img)
+    elif tensor_imgs.dim() == 3:
+        pil_imgs.append(transform_normal(tensor_imgs))
+    elif tensor_imgs.dim() == 4:
+        for img in tensor_imgs:
+            pil_imgs.append(transform_normal(img))
     return pil_imgs
 
 
