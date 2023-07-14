@@ -40,10 +40,10 @@ class BaseDiffusion:
         self.scheduler.set_timesteps(num_inference_steps)
 
         if xt is None:
-            xt = generate_random_samples(1, self.unet, generator=generator) : # type: ignore
+            xt = generate_random_samples(1, self.unet, generator=generator)  # type: ignore
         if zs is None and eta > 0:
-            zs = generate_random_samples( # type: ignore
-                num_inference_steps, self.unet, generator=generator # type: ignore
+            zs = generate_random_samples(  # type: ignore
+                num_inference_steps, self.unet, generator=generator  # type: ignore
             )
 
         return xt, zs
@@ -82,9 +82,9 @@ class BaseDiffusion:
         variance_noise: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         output = self.scheduler.step(
-            model_output, timestep, xt, eta=eta, variance_noise=variance_noise # type: ignore
+            model_output, timestep, xt, eta=eta, variance_noise=variance_noise  # type: ignore
         )
-        xt, pred_original_sample = output.to_tuple() # type: ignore
+        xt, pred_original_sample = output.to_tuple()  # type: ignore
 
         return xt, pred_original_sample
 
@@ -104,7 +104,7 @@ class BaseDiffusion:
                 timestep=timestep,
                 xt=xt,
                 eta=eta,
-                variance_noise=variance_noise, # type: ignore
+                variance_noise=variance_noise,  # type: ignore
             )
 
             new_model_outputs.append(model_output)
@@ -132,11 +132,11 @@ class BaseDiffusion:
         if generator is None:
             generator = set_seed(seed)
 
-        xt, zs = self._setup_generation( # type: ignore
+        xt, zs = self._setup_generation(  # type: ignore
             num_inference_steps=num_inference_steps,
-            xt=xt, # type: ignore
+            xt=xt,  # type: ignore
             eta=eta,
-            zs=zs, # type: ignore
+            zs=zs,  # type: ignore
             generator=generator,
         )
         # additional setup specific to the child class
@@ -157,9 +157,9 @@ class BaseDiffusion:
 
         if return_pred_original_samples:
             pred_original_samples = tensor_to_pil(pred_original_samples)
-            return img, new_model_outputs, pred_original_samples # type: ignore
+            return img, new_model_outputs, pred_original_samples  # type: ignore
         else:
-            return img, new_model_outputs, None # type: ignore
+            return img, new_model_outputs, None  # type: ignore
 
     def generate_images(
         self,
