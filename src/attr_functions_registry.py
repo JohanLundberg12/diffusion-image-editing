@@ -3,6 +3,7 @@ from attr_functions import (
     SingleColorAttrFunc,
     MultiColorAttrFunc,
     NetAttrFunc,
+    AnyGANAttrFunc,
 )
 from typing import Dict, Type, Optional, Any, Union
 
@@ -57,5 +58,6 @@ def create_attr_func_registry():
     attr_func_registry.register(SingleColorAttrFunc)
     attr_func_registry.register(MultiColorAttrFunc)
     attr_func_registry.register(NetAttrFunc)
+    attr_func_registry.register(AnyGANAttrFunc)
 
     return attr_func_registry
