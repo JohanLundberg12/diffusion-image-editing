@@ -20,11 +20,12 @@ from real_image_editing_utils import reverse_inverse_process
 
 @dataclass
 class EditorOutput(BaseOutput):
-    imgs: Image.Image
+    imgs: List[Image.Image]
     pred_original_samples: List[Image.Image]
     model_outputs: List[torch.Tensor]
-    segmentation: Image.Image | None
-    mask: Image.Image | None
+    segmentation: List[Image.Image] | None
+    mask: List[Image.Image] | None
+    pts: List[Image.Image]
 
 
 class SegDiffEditPipeline:
@@ -49,6 +50,8 @@ class SegDiffEditPipeline:
         attr_func: AttrFunc | None = None,
         apply_mask_with_attr_func: bool = False,
         dilate_mask: bool = False,
+        prompt: str = "",
+        guidance_scale: float = 7.5,
     ) -> EditorOutput:
         # 1. apply mask on cls area to change it (resynthesize or not)
         # 2. apply a strategy, with masking, i.e. to make eyes blue
@@ -65,17 +68,19 @@ class SegDiffEditPipeline:
         # 5. Runs the diffusion process on the modified xt and zs and
         # applies an attr function at each timestep.
 
-        if xt is not None and not model_outputs:
-            raise ValueError(
-                "If xt is provided, model_outputs must be provided as well."
-            )
+        # if xt is not None and not model_outputs:
+        # raise ValueError(
+        # "If xt is provided, model_outputs must be provided as well."
+        # )
 
-        if zs and eta == 0:
-            raise ValueError("If zs is provided, eta must be > 0.")
+        if zs and eta == 0 or not zs and eta > 0:
+            raise ValueError(
+                "If zs is not empty, eta must be greater than 0. If zs is empty, eta must be 0"
+            )
 
         if not resynthesize and attr_func is None:
             raise ValueError(
-                "If resynthesize is False, attr_func must be provided. Or not edit is made"
+                "If resynthesize is False, attr_func must be provided. Or no edit is made"
             )
 
         if not classes and attr_func is None:
@@ -123,7 +128,7 @@ class SegDiffEditPipeline:
 
             if eta > 0:
                 if not zs:
-                    raise ValueError("eta > 0 and zso is empty")
+                    raise ValueError("eta > 0 and zs is empty")
                 zsv = generate_random_samples(
                     self.diffusion_wrapper.scheduler.num_inference_steps,
                     self.diffusion_wrapper.unet,
@@ -132,18 +137,32 @@ class SegDiffEditPipeline:
 
         new_model_outputs = list()
         pred_original_samples = list()
+        pts = list()
+
+        additional_setup = self.diffusion_wrapper._additional_setup(
+            prompt=prompt, guidance_scale=guidance_scale
+        )
 
         for step_idx, timestep in enumerate(self.diffusion_wrapper.scheduler.timesteps):
-            model_output = self.diffusion_wrapper.predict_model_output(xt, timestep)
+            model_output = self.diffusion_wrapper.predict_model_output(
+                xt, timestep, **additional_setup
+            )
             if mask is not None and model_outputs is not None:
                 model_output = apply_mask(mask, model_outputs[step_idx], model_output)
 
             new_model_outputs.append(model_output)
 
+            variance_noise = self.diffusion_wrapper.get_variance_noise(
+                zs, step_idx, eta
+            )
+            xt, pred_original_sample = self.diffusion_wrapper.single_step(
+                model_output, timestep, xt, eta, variance_noise
+            )
             if attr_func is not None:
                 if apply_mask_with_attr_func and mask is not None:
                     xt = attr_func.apply(
                         input_image=xt,
+                        pred_x_0=pred_original_sample,
                         model_output=model_output,  # type: ignore
                         timestep=timestep,  # type: ignore
                         step_idx=step_idx,
@@ -152,30 +171,31 @@ class SegDiffEditPipeline:
                         x_0=latent,
                     )
                 else:
-                    xt = attr_func.apply(
-                        xt,
-                        model_output,  # type: ignore
-                        timestep,  # type: ignore
-                        step_idx,
+                    xt, pt = attr_func.apply(
+                        input_image=xt,
+                        pred_x_0=pred_original_sample,
+                        model_output=model_output,  # type: ignore
+                        timestep=timestep,  # type: ignore
+                        step_idx=step_idx,
                         scheduler=self.diffusion_wrapper.scheduler,
                         x_0=latent,
                     )
-            variance_noise = self.diffusion_wrapper.get_variance_noise(
-                zs, step_idx, eta
-            )
-            xt, pred_original_sample = self.diffusion_wrapper.single_step(
-                model_output, timestep, xt, eta, variance_noise
-            )
             pred_original_samples.append(pred_original_sample)
+            pts.append(pt)
 
         img = self.diffusion_wrapper.decode(xt)
-        pred_original_samples = torch.stack(pred_original_samples, dim=0)
+        pred_original_samples = torch.stack(pred_original_samples, dim=0).squeeze()
         pred_original_samples = self.diffusion_wrapper.decode(pred_original_samples)
         img = tensor_to_pil(img)
         pred_original_samples = tensor_to_pil(pred_original_samples)
+
+        pts = torch.stack(pts, dim=0).squeeze()
+        pts = self.diffusion_wrapper.decode(pts)
+        pts = tensor_to_pil(pts)
+
         segmentation = tensor_to_pil(segmentation)
         mask = tensor_to_pil(mask) if mask is not None else None
 
         return EditorOutput(
-            img, pred_original_samples, new_model_outputs, segmentation, mask
+            img, pred_original_samples, new_model_outputs, segmentation, mask, pts
         )
