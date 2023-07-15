@@ -36,13 +36,15 @@ class DiffusionModelFactory:
 
         elif name == "ldm":
             pipe = DiffusionPipeline.from_pretrained("CompVis/ldm-celebahq-256")
-            pipe.scheduler = DDIMPipeline.from_config(pipe.scheduler.config)
+            pipe.scheduler = DDIMScheduler.from_config(
+                "CompVis/ldm-celebahq-256", subfolder="scheduler"
+            )
             pipe.to(self.device)  # type: ignore
 
             # LDM was trained with this flag=False
             pipe.scheduler.config.clip_sample = self.sample_clipping
 
-            return DiffusionSynthesizer(pipe.unet, pipe.scheduler, pipe.vqmodel)
+            return DiffusionSynthesizer(pipe.unet, pipe.scheduler, pipe.vqvae)
 
         elif name == "sd":
             access_token = os.environ.get("HF_TOKEN")

@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 import torch
-from diffusers import UNet2DModel
+from diffusers import UNet2DModel, UNet2DConditionModel
 from itertools import zip_longest
 from tqdm import tqdm
 
@@ -35,7 +35,9 @@ def get_device(verbose: bool = False) -> torch.device:
 
 
 def generate_random_samples(
-    num_samples: int, unet: UNet2DModel, generator: Optional[torch.Generator] = None
+    num_samples: int,
+    unet: UNet2DModel | UNet2DConditionModel,
+    generator: Optional[torch.Generator] = None,
 ) -> Union[torch.Tensor, List[torch.Tensor]]:
     if num_samples == 1:
         return torch.randn(
@@ -139,12 +141,14 @@ def set_seed(seed: int | None) -> torch.Generator:
     return torch.manual_seed(seed)
 
 
-def get_alpha_prod_t(alphas_cumprod, timestep):
-    alpha_prod_t = alphas_cumprod[timestep]  # type: ignore
+def get_alpha_prod_t(
+    alphas_cumprod: torch.Tensor, timestep: torch.Tensor
+) -> torch.Tensor:
+    alpha_prod_t = alphas_cumprod[timestep]
     return alpha_prod_t
 
 
-def pred_original_samples(img, alpha_prod_t, model_output):
+def pred_original_samples(img, alpha_prod_t, model_output) -> torch.Tensor:
     beta_prod_t = 1 - alpha_prod_t
     p_t = (img - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
     return p_t

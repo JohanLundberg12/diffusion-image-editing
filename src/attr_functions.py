@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
-import lpips
+from typing import Tuple
+
+# import lpips
 import torch
 from torchvision import models
 
@@ -55,14 +57,14 @@ class AttrFunc(ABC):
     def apply(
         self,
         input_image,
-        pred_x_0,
         model_output,
         timestep,
         step_idx,
         scheduler,
+        model,
         mask=None,
         x_0=None,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Apply the attribute function strategy to update the input image."""
 
         input_image = input_image.detach().requires_grad_(True)
@@ -77,9 +79,13 @@ class AttrFunc(ABC):
         #    attr_loss = self.loss(mask * p_t) + l2_norm(1 - mask * p_t, x_0)
         # else:
         #    attr_loss = self.loss(p_t)
+
+        p_t = model.decode(p_t)
+
         attr_loss = self.loss(p_t)
         attr_loss = attr_loss * self.loss_scale
-        if step_idx % 10 == 0:
+
+        if step_idx % 5 == 0:
             print(step_idx, "loss:", attr_loss.item())
 
         attr_grad = -torch.autograd.grad(attr_loss, input_image)[0]

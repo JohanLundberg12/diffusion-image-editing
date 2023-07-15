@@ -1,7 +1,6 @@
 from typing import Optional
 import torch
 
-
 from diffusers import (
     DDIMScheduler,
     UNet2DModel,
@@ -21,7 +20,7 @@ class DiffusionSynthesizer(BaseDiffusion):
         if self.vae is None:
             return sample
         sample = sample.to(dtype=torch.float32)
-        latent = self.vae.encode(sample).latents
+        latent = self.vae.encode(sample).latents  # type: ignore
 
         return latent
 
@@ -29,7 +28,7 @@ class DiffusionSynthesizer(BaseDiffusion):
         if self.vae is None:
             return latent
         latent = latent.to(dtype=torch.float32)
-        sample = self.vae.decode(latent).sample
+        sample = self.vae.decode(latent).sample  # type: ignore
 
         return sample
 

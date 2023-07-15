@@ -1,14 +1,21 @@
+from typing import List, Tuple
 import dlib
 import torch
 from PIL import Image
 
-from alignment import align_face
 from diffusion_model_factory import DiffusionModelFactory
+from diffusion import DiffusionSynthesizer
+from stable_diffusion_wrapper import StableDiffusionWrapper
 
+from alignment import align_face
 from transforms import pil_to_tensor
 
 
-def reverse_inverse_process(x_t, model, residuals=None, inversion=False):
+def reverse_inverse_process(
+    x_t: torch.Tensor,
+    model: DiffusionSynthesizer | StableDiffusionWrapper,
+    inversion=False,
+) -> Tuple[torch.Tensor, List[torch.Tensor]]:
     scheduler = model.scheduler
     timesteps = scheduler.timesteps
     residuals = list()
@@ -78,7 +85,9 @@ def compare_reverse_inverse_process_to_pipeline_synthesis(x_t: torch.Tensor):
     pipeline = factory.create_model(name="ddpm")
 
     x_0_gen, _ = reverse_inverse_process(x_t, pipeline, inversion=False)
-    x_0_syn, _ = pipeline.synthesize_image(x_t, eta=0.0)  # type: ignore
+    x_0_syn, _, _ = pipeline.generate_image(
+        x_t, eta=0.0, return_pred_original_samples=False
+    )
     x_0_syn = pil_to_tensor(x_0_syn).to("cuda")  # type: ignore
 
     x_t_gen, _ = reverse_inverse_process(x_0_gen, pipeline, inversion=True)
@@ -87,8 +96,12 @@ def compare_reverse_inverse_process_to_pipeline_synthesis(x_t: torch.Tensor):
     x_0_gen_gen, _ = reverse_inverse_process(x_t_gen, pipeline, inversion=False)
     x_0_gen_syn, _ = reverse_inverse_process(x_t_syn, pipeline, inversion=False)
 
-    x_0_syn_gen, _ = pipeline.synthesize_image(x_t_gen, eta=0)  # type: ignore
-    x_0_syn_syn, _ = pipeline.synthesize_image(x_t_syn, eta=0)  # type: ignore
+    x_0_syn_gen, _, _ = pipeline.generate_image(
+        x_t_gen, eta=0, return_pred_original_samples=False
+    )
+    x_0_syn_syn, _, _ = pipeline.generate_image(
+        x_t_syn, eta=0, return_pred_original_samples=False
+    )
     x_0_syn_gen = pil_to_tensor(x_0_syn_gen).to("cuda")  # type: ignore
     x_0_syn_syn = pil_to_tensor(x_0_syn_syn).to("cuda")  # type: ignore
 

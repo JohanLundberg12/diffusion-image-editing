@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import torch
 from PIL import Image
@@ -20,12 +20,12 @@ from real_image_editing_utils import reverse_inverse_process
 
 @dataclass
 class EditorOutput(BaseOutput):
-    imgs: List[Image.Image]
-    pred_original_samples: List[Image.Image]
-    model_outputs: List[torch.Tensor]
-    segmentation: List[Image.Image] | None
-    mask: List[Image.Image] | None
-    pts: List[Image.Image]
+    imgs: Image.Image
+    pred_original_samples: Optional[List[Image.Image]] = None
+    model_outputs: Optional[List[torch.Tensor]] = None
+    segmentation: Optional[List[Image.Image]] = None
+    mask: Optional[List[Image.Image]] = None
+    pts: Optional[List[Image.Image]] = None
 
 
 class SegDiffEditPipeline:
@@ -68,11 +68,6 @@ class SegDiffEditPipeline:
         # 5. Runs the diffusion process on the modified xt and zs and
         # applies an attr function at each timestep.
 
-        # if xt is not None and not model_outputs:
-        # raise ValueError(
-        # "If xt is provided, model_outputs must be provided as well."
-        # )
-
         if zs and eta == 0 or not zs and eta > 0:
             raise ValueError(
                 "If zs is not empty, eta must be greater than 0. If zs is empty, eta must be 0"
@@ -102,8 +97,7 @@ class SegDiffEditPipeline:
         elif xt is None and eta == 0:
             xt, model_outputs = reverse_inverse_process(
                 latent,
-                self.diffusion_wrapper.unet,
-                self.diffusion_wrapper.scheduler,
+                self.diffusion_wrapper,
                 inversion=True,
             )
             model_outputs = model_outputs[::-1]
@@ -112,7 +106,10 @@ class SegDiffEditPipeline:
         if use_mask:
             mask_creator = MaskCreator(
                 dilate_mask=dilate_mask,
-                resize_size=self.diffusion_wrapper.data_dimensionality,
+                resize_size=(
+                    self.diffusion_wrapper.data_dimensionality,
+                    self.diffusion_wrapper.data_dimensionality,
+                ),
             )
             mask = mask_creator.create_mask(segmentation, classes=classes)
         else:
@@ -160,37 +157,42 @@ class SegDiffEditPipeline:
             )
             if attr_func is not None:
                 if apply_mask_with_attr_func and mask is not None:
-                    xt = attr_func.apply(
+                    xt, pt = attr_func.apply(
                         input_image=xt,
-                        pred_x_0=pred_original_sample,
                         model_output=model_output,  # type: ignore
                         timestep=timestep,  # type: ignore
                         step_idx=step_idx,
                         scheduler=self.diffusion_wrapper.scheduler,
+                        model=self.diffusion_wrapper,
                         mask=mask,
                         x_0=latent,
                     )
                 else:
                     xt, pt = attr_func.apply(
                         input_image=xt,
-                        pred_x_0=pred_original_sample,
                         model_output=model_output,  # type: ignore
                         timestep=timestep,  # type: ignore
                         step_idx=step_idx,
                         scheduler=self.diffusion_wrapper.scheduler,
+                        model=self.diffusion_wrapper,
+                        mask=None,
                         x_0=latent,
                     )
             pred_original_samples.append(pred_original_sample)
             pts.append(pt)
 
-        img = self.diffusion_wrapper.decode(xt)
+        tensor = self.diffusion_wrapper.decode(xt)
+        img = tensor_to_pil(tensor)[0]
+
         pred_original_samples = torch.stack(pred_original_samples, dim=0).squeeze()
-        pred_original_samples = self.diffusion_wrapper.decode(pred_original_samples)
-        img = tensor_to_pil(img)
+        pred_original_samples = [
+            self.diffusion_wrapper.decode(pred_original_sample.unsqueeze(0))
+            for pred_original_sample in pred_original_samples
+        ]
         pred_original_samples = tensor_to_pil(pred_original_samples)
 
         pts = torch.stack(pts, dim=0).squeeze()
-        pts = self.diffusion_wrapper.decode(pts)
+        pts = [self.diffusion_wrapper.decode(pt.unsqueeze(0)) for pt in pts]
         pts = tensor_to_pil(pts)
 
         segmentation = tensor_to_pil(segmentation)

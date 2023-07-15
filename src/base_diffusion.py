@@ -79,7 +79,7 @@ class BaseDiffusion:
         timestep: torch.Tensor,
         xt: torch.Tensor,
         eta: float,
-        variance_noise: torch.Tensor,
+        variance_noise: torch.Tensor | None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         output = self.scheduler.step(
             model_output, timestep, xt, eta=eta, variance_noise=variance_noise  # type: ignore
@@ -90,7 +90,7 @@ class BaseDiffusion:
 
     def diffusion_loop(
         self, xt, eta, zs, pbar, **kwargs
-    ) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
+    ) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
         new_model_outputs = list()
         pred_original_samples = list()
 
@@ -111,8 +111,12 @@ class BaseDiffusion:
             pred_original_samples.append(pred_original_sample.detach())
 
         sample = self.decode(xt)
-        pred_original_samples = torch.stack(pred_original_samples, dim=0)
-        pred_original_samples = self.decode(pred_original_samples)
+
+        pred_original_samples = torch.stack(pred_original_samples, dim=0).squeeze()
+        pred_original_samples = [
+            self.decode(pred_original_sample.unsqueeze(0))
+            for pred_original_sample in pred_original_samples
+        ]
 
         return sample, new_model_outputs, pred_original_samples
 
@@ -153,11 +157,11 @@ class BaseDiffusion:
             **additional_setup,  # pass additional parameters to diffusion_loop
         )
 
-        img = tensor_to_pil(sample)
+        img = tensor_to_pil(sample)[0]
 
         if return_pred_original_samples:
             pred_original_samples = tensor_to_pil(pred_original_samples)
-            return img, new_model_outputs, pred_original_samples  # type: ignore
+            return img, new_model_outputs, pred_original_samples
         else:
             return img, new_model_outputs, None  # type: ignore
 

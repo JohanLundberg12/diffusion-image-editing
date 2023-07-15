@@ -10,7 +10,7 @@ def _scale_zero_one(input: torch.Tensor) -> torch.Tensor:
     return (input / 2 + 0.5).clamp(0, 1)
 
 
-def tensor_to_pil(tensor_imgs):
+def tensor_to_pil(tensor_imgs) -> List[Image.Image]:
     transform_normal = transforms.Compose(
         [
             transforms.Lambda(_scale_zero_one),
