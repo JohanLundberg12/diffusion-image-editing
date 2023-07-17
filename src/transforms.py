@@ -10,7 +10,7 @@ def _scale_zero_one(input: torch.Tensor) -> torch.Tensor:
     return (input / 2 + 0.5).clamp(0, 1)
 
 
-def tensor_to_pil(tensor_imgs) -> List[Image.Image]:
+def tensor_to_pil(tensor_img: torch.Tensor) -> Image.Image:
     transform_normal = transforms.Compose(
         [
             transforms.Lambda(_scale_zero_one),
@@ -27,16 +27,23 @@ def tensor_to_pil(tensor_imgs) -> List[Image.Image]:
         ]
     )
 
+    if tensor_img.dim() == 2:
+        pil_img = transform_mask(tensor_img)
+    elif tensor_img.dim() == 3:
+        pil_img = transform_normal(tensor_img)
+    elif tensor_img.dim() == 4:
+        assert tensor_img.shape[0] == 1
+        pil_img = transform_normal(tensor_img.squeeze(0))
+    return pil_img
+
+
+def tensors_to_pils(tensor_imgs: List[torch.Tensor]) -> List[Image.Image]:
     pil_imgs = list()
 
-    if tensor_imgs.dim() == 2:
-        pil_img = transform_mask(tensor_imgs)
-        pil_imgs.append(pil_img)
-    elif tensor_imgs.dim() == 3:
-        pil_imgs.append(transform_normal(tensor_imgs))
-    elif tensor_imgs.dim() == 4:
-        for img in tensor_imgs:
-            pil_imgs.append(transform_normal(img))
+    for img in tensor_imgs:
+        pil_image = tensor_to_pil(img)
+        pil_imgs.append(pil_image)
+
     return pil_imgs
 
 

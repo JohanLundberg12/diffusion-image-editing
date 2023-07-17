@@ -139,16 +139,3 @@ def set_seed(seed: int | None) -> torch.Generator:
     if seed is None:
         seed = int(torch.randint(int(1e6), (1,)))
     return torch.manual_seed(seed)
-
-
-def get_alpha_prod_t(
-    alphas_cumprod: torch.Tensor, timestep: torch.Tensor
-) -> torch.Tensor:
-    alpha_prod_t = alphas_cumprod[timestep]
-    return alpha_prod_t
-
-
-def pred_original_samples(img, alpha_prod_t, model_output) -> torch.Tensor:
-    beta_prod_t = 1 - alpha_prod_t
-    p_t = (img - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
-    return p_t

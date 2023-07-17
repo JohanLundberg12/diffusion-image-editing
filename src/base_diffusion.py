@@ -12,8 +12,21 @@ from diffusers import (
     VQModel,
 )
 
-from transforms import tensor_to_pil
+from transforms import tensor_to_pil, tensors_to_pils
 from utils import create_progress_bar, get_device, generate_random_samples, set_seed
+
+
+def get_alpha_prod_t(
+    alphas_cumprod: torch.Tensor, timestep: torch.Tensor
+) -> torch.Tensor:
+    alpha_prod_t = alphas_cumprod[timestep]
+    return alpha_prod_t
+
+
+def pred_original_samples(img, alpha_prod_t, model_output) -> torch.Tensor:
+    beta_prod_t = 1 - alpha_prod_t
+    p_t = (img - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
+    return p_t
 
 
 class BaseDiffusion:
@@ -28,6 +41,82 @@ class BaseDiffusion:
         self.scheduler = scheduler
         self.vae = vae
         self.data_dimensionality = self.unet.sample_size
+
+    def reverse_inverse_process(
+        self,
+        x_t: torch.Tensor,
+        inversion=False,
+        prompt="",
+        guidance_scale=7.5,
+    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+        scheduler = self.scheduler
+        timesteps = scheduler.timesteps
+        model_outputs = list()
+
+        additional_setup = self._additional_setup(prompt, guidance_scale)
+
+        if inversion:
+            timesteps = reversed(timesteps)
+
+        for step_idx, step_time in enumerate(timesteps):
+            with torch.no_grad():
+                model_output = self.predict_model_output(
+                    x_t,
+                    step_time,
+                    **additional_setup,
+                ).sample
+
+            if inversion:
+                next_timestep = min(
+                    scheduler.config.num_train_timesteps - 2,
+                    step_time
+                    + scheduler.config.num_train_timesteps
+                    // scheduler.num_inference_steps,
+                )
+            else:
+                prev_timestep = (
+                    step_time
+                    - scheduler.config.num_train_timesteps
+                    // scheduler.num_inference_steps
+                )
+
+            # compute alphas, betas
+            alpha_prod_t = scheduler.alphas_cumprod[step_time]
+            if inversion:
+                alpha_prod_t_next = (
+                    scheduler.alphas_cumprod[next_timestep]  # type: ignore
+                    if next_timestep >= 0  # type: ignore
+                    else scheduler.final_alpha_cumprod
+                )
+            else:
+                alpha_prod_t_prev = (
+                    scheduler.alphas_cumprod[prev_timestep]  # type: ignore
+                    if prev_timestep >= 0  # type: ignore
+                    else scheduler.final_alpha_cumprod
+                )
+
+            p_t = pred_original_samples(x_t, alpha_prod_t, model_output)
+
+            if scheduler.config.clip_sample:
+                p_t = p_t.clamp(
+                    -scheduler.config.clip_sample_range,
+                    scheduler.config.clip_sample_range,
+                )
+
+            # pred sample direction
+            if inversion:
+                pred_sample_direction = (1 - alpha_prod_t_next) ** (0.5) * model_output  # type: ignore
+            else:
+                pred_sample_direction = (1 - alpha_prod_t_prev) ** (0.5) * model_output  # type: ignore
+
+            if inversion:
+                x_t = alpha_prod_t_next ** (0.5) * p_t + pred_sample_direction  # type: ignore
+            else:
+                x_t = alpha_prod_t_prev ** (0.5) * p_t + pred_sample_direction  # type: ignore
+
+            model_outputs.append(model_output)
+
+        return x_t, model_outputs
 
     def _setup_generation(
         self,
@@ -112,9 +201,12 @@ class BaseDiffusion:
 
         sample = self.decode(xt)
 
-        pred_original_samples = torch.stack(pred_original_samples, dim=0).squeeze()
+        pred_original_samples = torch.stack(
+            pred_original_samples, dim=0
+        ).squeeze()  # B, 1, C, H, W -> B, C, H, W
+
         pred_original_samples = [
-            self.decode(pred_original_sample.unsqueeze(0))
+            self.decode(pred_original_sample.unsqueeze(0))  # C, H, W -> 1, C, H, W
             for pred_original_sample in pred_original_samples
         ]
 
@@ -157,10 +249,10 @@ class BaseDiffusion:
             **additional_setup,  # pass additional parameters to diffusion_loop
         )
 
-        img = tensor_to_pil(sample)[0]
+        img = tensor_to_pil(sample)
 
         if return_pred_original_samples:
-            pred_original_samples = tensor_to_pil(pred_original_samples)
+            pred_original_samples = tensors_to_pils(pred_original_samples)
             return img, new_model_outputs, pred_original_samples
         else:
             return img, new_model_outputs, None  # type: ignore

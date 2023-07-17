@@ -1,100 +1,32 @@
-from typing import List, Tuple
 import dlib
 import torch
 from PIL import Image
 
 from diffusion_model_factory import DiffusionModelFactory
-from diffusion import DiffusionSynthesizer
-from stable_diffusion_wrapper import StableDiffusionWrapper
 
 from alignment import align_face
 from transforms import pil_to_tensor
-
-
-def reverse_inverse_process(
-    x_t: torch.Tensor,
-    model: DiffusionSynthesizer | StableDiffusionWrapper,
-    inversion=False,
-) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-    scheduler = model.scheduler
-    timesteps = scheduler.timesteps
-    residuals = list()
-
-    if inversion:
-        timesteps = reversed(timesteps)
-
-    for step_idx, step_time in enumerate(timesteps):
-        with torch.no_grad():
-            residual = model.unet(x_t, step_time).sample
-
-        if inversion:
-            next_timestep = min(
-                scheduler.config.num_train_timesteps - 2,
-                step_time
-                + scheduler.config.num_train_timesteps // scheduler.num_inference_steps,
-            )
-        else:
-            prev_timestep = (
-                step_time
-                - scheduler.config.num_train_timesteps // scheduler.num_inference_steps
-            )
-
-        # compute alphas, betas
-        alpha_prod_t = scheduler.alphas_cumprod[step_time]
-        if inversion:
-            alpha_prod_t_next = (
-                scheduler.alphas_cumprod[next_timestep]  # type: ignore
-                if next_timestep >= 0  # type: ignore
-                else scheduler.final_alpha_cumprod
-            )
-        else:
-            alpha_prod_t_prev = (
-                scheduler.alphas_cumprod[prev_timestep]  # type: ignore
-                if prev_timestep >= 0  # type: ignore
-                else scheduler.final_alpha_cumprod
-            )
-
-        beta_prod_t = 1 - alpha_prod_t
-
-        # Compute predicted x_0
-        p_t = (x_t - beta_prod_t ** (0.5) * residual) / alpha_prod_t ** (0.5)
-
-        if scheduler.config.clip_sample:
-            p_t = p_t.clamp(
-                -scheduler.config.clip_sample_range, scheduler.config.clip_sample_range
-            )
-
-        # pred sample direction
-        if inversion:
-            pred_sample_direction = (1 - alpha_prod_t_next) ** (0.5) * residual  # type: ignore
-        else:
-            pred_sample_direction = (1 - alpha_prod_t_prev) ** (0.5) * residual  # type: ignore
-
-        if inversion:
-            x_t = alpha_prod_t_next ** (0.5) * p_t + pred_sample_direction  # type: ignore
-        else:
-            x_t = alpha_prod_t_prev ** (0.5) * p_t + pred_sample_direction  # type: ignore
-
-        residuals.append(residual)
-
-    return x_t, residuals
 
 
 def compare_reverse_inverse_process_to_pipeline_synthesis(x_t: torch.Tensor):
     factory = DiffusionModelFactory()
     pipeline = factory.create_model(name="ddpm")
 
-    x_0_gen, _ = reverse_inverse_process(x_t, pipeline, inversion=False)
+    x_0_gen, _ = pipeline.reverse_inverse_process(x_t, pipeline, inversion=False)
     x_0_syn, _, _ = pipeline.generate_image(
         x_t, eta=0.0, return_pred_original_samples=False
     )
     x_0_syn = pil_to_tensor(x_0_syn).to("cuda")  # type: ignore
 
-    x_t_gen, _ = reverse_inverse_process(x_0_gen, pipeline, inversion=True)
-    x_t_syn, _ = reverse_inverse_process(x_0_syn, pipeline, inversion=True)
+    x_t_gen, _ = pipeline.reverse_inverse_process(x_0_gen, pipeline, inversion=True)
+    x_t_syn, _ = pipeline.reverse_inverse_process(x_0_syn, pipeline, inversion=True)
 
-    x_0_gen_gen, _ = reverse_inverse_process(x_t_gen, pipeline, inversion=False)
-    x_0_gen_syn, _ = reverse_inverse_process(x_t_syn, pipeline, inversion=False)
+    x_0_gen_gen, _ = pipeline.reverse_inverse_process(
+        x_t_gen, pipeline, inversion=False
+    )
+    x_0_gen_syn, _ = pipeline.reverse_inverse_process(
+        x_t_syn, pipeline, inversion=False
+    )
 
     x_0_syn_gen, _, _ = pipeline.generate_image(
         x_t_gen, eta=0, return_pred_original_samples=False
