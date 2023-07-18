@@ -1,4 +1,4 @@
-from typing import Optional, Union, Tuple, List
+from typing import Any, Optional, Union, Tuple, List
 
 import torch
 
@@ -20,12 +20,16 @@ def get_alpha_prod_t(
     alphas_cumprod: torch.Tensor, timestep: torch.Tensor
 ) -> torch.Tensor:
     alpha_prod_t = alphas_cumprod[timestep]
+
     return alpha_prod_t
 
 
-def pred_original_samples(img, alpha_prod_t, model_output) -> torch.Tensor:
+def pred_original_samples(
+    img: torch.Tensor, alpha_prod_t: torch.Tensor, model_output: torch.Tensor
+) -> torch.Tensor:
     beta_prod_t = 1 - alpha_prod_t
     p_t = (img - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
+
     return p_t
 
 
@@ -64,7 +68,7 @@ class BaseDiffusion:
                     x_t,
                     step_time,
                     **additional_setup,
-                ).sample
+                )
 
             if inversion:
                 next_timestep = min(
@@ -118,26 +122,26 @@ class BaseDiffusion:
 
         return x_t, model_outputs
 
-    def _setup_generation(
+    def _initialize_random_samples(
         self,
         num_inference_steps: int,
-        xt: torch.Tensor,
         eta: float,
-        zs: List[torch.Tensor] | None,
         generator: torch.Generator,
     ) -> Tuple[torch.Tensor, Union[List[torch.Tensor], None]]:
-        self.scheduler.set_timesteps(num_inference_steps)
+        xt = generate_random_samples(1, self.unet, generator=generator)
 
-        if xt is None:
-            xt = generate_random_samples(1, self.unet, generator=generator)  # type: ignore
-        if zs is None and eta > 0:
-            zs = generate_random_samples(  # type: ignore
-                num_inference_steps, self.unet, generator=generator  # type: ignore
+        if eta > 0:
+            zs = generate_random_samples(
+                num_inference_steps, self.unet, generator=generator
             )
+        else:
+            zs = None
 
         return xt, zs
 
-    def _additional_setup(self, prompt: str = "", guidance_scale: float = 7.5) -> dict:
+    def _additional_setup(
+        self, prompt: str = "", guidance_scale: float = 7.5
+    ) -> dict[str, Any]:
         return {}
 
     def encode(self, sample: torch.Tensor) -> torch.Tensor:
@@ -178,7 +182,7 @@ class BaseDiffusion:
         return xt, pred_original_sample
 
     def diffusion_loop(
-        self, xt, eta, zs, pbar, **kwargs
+        self, xt: torch.Tensor, eta: float, zs: List[torch.Tensor], pbar, **kwargs: Any
     ) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
         new_model_outputs = list()
         pred_original_samples = list()
@@ -193,7 +197,7 @@ class BaseDiffusion:
                 timestep=timestep,
                 xt=xt,
                 eta=eta,
-                variance_noise=variance_noise,  # type: ignore
+                variance_noise=variance_noise,
             )
 
             new_model_outputs.append(model_output)
@@ -214,31 +218,21 @@ class BaseDiffusion:
 
     def generate_image(
         self,
-        xt: Optional[torch.Tensor] = None,
-        eta: float = 0,
+        xt: Optional[torch.Tensor],
+        eta: float,
         zs: Optional[torch.Tensor] = None,
-        num_inference_steps: int = 50,
-        seed: Optional[int] = None,
+        num_of_inference_steps: int = 50,
         show_progbar: bool = True,
         return_pred_original_samples: bool = True,
-        generator: Optional[torch.Generator] = None,
-        prompt: str = "",
-        guidance_scale: float = 7.5,
+        **kwargs: Any,
     ) -> Tuple[Image.Image, List[torch.Tensor], Optional[List[Image.Image]]]:
-        if generator is None:
-            generator = set_seed(seed)
+        if eta > 0 and zs is None:
+            raise ValueError("If eta > 0, zs must be provided.")
 
-        xt, zs = self._setup_generation(  # type: ignore
-            num_inference_steps=num_inference_steps,
-            xt=xt,  # type: ignore
-            eta=eta,
-            zs=zs,  # type: ignore
-            generator=generator,
-        )
-        # additional setup specific to the child class
-        additional_setup = self._additional_setup(
-            prompt=prompt, guidance_scale=guidance_scale
-        )
+        if self.scheduler.num_inference_steps is None:
+            self.scheduler.set_timesteps(num_of_inference_steps)
+
+        additional_setup = self._additional_setup(**kwargs)
         pbar = create_progress_bar(self.scheduler.timesteps, show_progbar)
 
         sample, new_model_outputs, pred_original_samples = self.diffusion_loop(
@@ -246,7 +240,7 @@ class BaseDiffusion:
             eta=eta,
             zs=zs,
             pbar=pbar,
-            **additional_setup,  # pass additional parameters to diffusion_loop
+            **additional_setup,
         )
 
         img = tensor_to_pil(sample)
@@ -255,20 +249,22 @@ class BaseDiffusion:
             pred_original_samples = tensors_to_pils(pred_original_samples)
             return img, new_model_outputs, pred_original_samples
         else:
-            return img, new_model_outputs, None  # type: ignore
+            return img, new_model_outputs, None
 
     def generate_images(
         self,
         num_images: int = 1,
-        num_inference_steps: int = 50,
         eta: float = 0,
+        num_inference_steps: int = 50,
         seed: Optional[int] = None,
         show_progbar: bool = True,
-        **kwargs,
+        **kwargs: Any,
     ) -> Tuple[
         List[List[Image.Image]], List[List[torch.Tensor]], List[List[Image.Image]]
     ]:
         generator = set_seed(seed)
+
+        self.scheduler.set_timesteps(num_inference_steps)
 
         all_imgs = []
         all_model_outputs = []
@@ -277,12 +273,16 @@ class BaseDiffusion:
         pbar = create_progress_bar(range(num_images), show_progbar)
 
         for i in pbar:
-            imgs, model_outputs, original_sample_preds = self.generate_image(
+            xt, zs = self._initialize_random_samples(
                 num_inference_steps=num_inference_steps,
                 eta=eta,
-                seed=seed,
-                show_progbar=show_progbar,
                 generator=generator,
+            )
+            imgs, model_outputs, original_sample_preds = self.generate_image(
+                xt=xt,
+                eta=eta,
+                zs=zs,
+                show_progbar=show_progbar,
                 **kwargs,
             )
             all_imgs.append(imgs)
