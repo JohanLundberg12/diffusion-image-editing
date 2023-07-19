@@ -1,4 +1,4 @@
-attrs = [
+ATTRS = [
     "background",
     "skin",
     "l_brow",
@@ -19,10 +19,10 @@ attrs = [
     "hair",
     "hat",
 ]
-attr_dict = {i: j for i, j in zip(attrs, range(len(attrs)))}
+ATTR_DICT = {i: j for i, j in zip(ATTRS, range(len(ATTRS)))}
 
 
-any_GAN_attrs = [
+ANY_GAN_ATTRS = [
     "5_o_Clock_Shadow",
     "Arched_Eyebrows",
     "Attractive",
@@ -65,4 +65,4 @@ any_GAN_attrs = [
     "Young",
 ]
 
-any_GAN_attrs_dict = {i: j for i, j in zip(any_GAN_attrs, range(len(any_GAN_attrs)))}
+ANY_GAN_ATTRS_DICT = {i: j for i, j in zip(ANY_GAN_ATTRS, range(len(ANY_GAN_ATTRS)))}
