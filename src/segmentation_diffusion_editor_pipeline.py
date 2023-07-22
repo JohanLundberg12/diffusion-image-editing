@@ -7,13 +7,13 @@ from PIL import Image
 from diffusers.utils import BaseOutput
 
 from attr_functions import AttrFunc
-from diffusion import DiffusionSynthesizer
-from segmentation_model import SegmentationModel
+from diffusion_classes import DiffusionSynthesizer
+from models import SegmentationModel
 from mask_creator import MaskCreator
 from stable_diffusion_wrapper import StableDiffusionWrapper
 
 
-from transforms import tensor_to_pil, tensors_to_pils, pil_to_tensor
+from transforms import tensor_to_pil, pil_to_tensor
 from utils import apply_mask, get_device, generate_random_samples
 
 
@@ -38,15 +38,19 @@ class SegDiffEditPipeline:
         self.device = get_device()
 
     # move to helper functions or make it part of the decode call?
-    def decode_batch_of_tensors(self, tensor: torch.Tensor) -> List[torch.Tensor]:
-        return [self.diffusion_wrapper.decode(t.unsqueeze(0)) for t in tensor]
+    def to_pil_and_decode_batch_of_tensors(
+        self, tensor: torch.Tensor
+    ) -> List[Image.Image]:
+        return [
+            tensor_to_pil(self.diffusion_wrapper.decode(t.unsqueeze(0))) for t in tensor
+        ]
 
     # move to helper functions or make it part of the decode call?
-    def process_lists_of_tensors_and_decode(
+    def process_lists_of_tensors(
         self, tensors: List[torch.Tensor]
-    ) -> List[torch.Tensor]:
+    ) -> List[Image.Image]:
         tensor_stacked = torch.stack(tensors, dim=0).squeeze()
-        return self.decode_batch_of_tensors(tensor_stacked)
+        return self.to_pil_and_decode_batch_of_tensors(tensor_stacked)
 
     def edit_image(
         self,
@@ -54,7 +58,7 @@ class SegDiffEditPipeline:
         xt: torch.Tensor | None,
         model_outputs: List[torch.Tensor] | None,
         eta: float = 0,
-        zs: List[torch.Tensor] = [],
+        zs: Optional[torch.Tensor] = None,
         classes: List[int] = [],
         resynthesize: bool = False,
         attr_func: AttrFunc | None = None,
@@ -78,9 +82,9 @@ class SegDiffEditPipeline:
         # 5. Runs the diffusion process on the modified xt and zs and
         # applies an attr function at each timestep.
 
-        if zs and eta == 0 or not zs and eta > 0:
+        if (zs is not None and eta == 0) or (zs is None and eta > 0):
             raise ValueError(
-                "If zs is not empty, eta must be greater than 0. If zs is empty, eta must be 0"
+                "If zs is not None, eta must be greater than 0. If zs is empty, eta must be 0"
             )
 
         if not resynthesize and attr_func is None:
@@ -93,11 +97,13 @@ class SegDiffEditPipeline:
                 "If classes is empty, attr_func must be provided. Or not edit is made"
             )
 
-        latent = pil_to_tensor(img).to(self.device)
-        segmentation = self.segmentation_model(latent)
+        tensor = pil_to_tensor(img).to(self.device)
+        segmentation = self.segmentation_model(tensor)
+        latent = self.diffusion_wrapper.encode(tensor)
 
-        if self.diffusion_wrapper.vae is not None:
-            latent = self.diffusion_wrapper.encode(latent)
+        additional_setup = self.diffusion_wrapper._additional_setup(
+            prompt=prompt, guidance_scale=guidance_scale
+        )
 
         # infer xt if not provided, mostly for real images, but also works for synthetic images
         if xt is None and eta > 0:
@@ -108,11 +114,11 @@ class SegDiffEditPipeline:
             xt, model_outputs = self.diffusion_wrapper.reverse_inverse_process(
                 latent,
                 inversion=True,
-                prompt=prompt,
-                guidance_scale=guidance_scale,
+                **additional_setup,
             )
             model_outputs = model_outputs[::-1]
 
+        # only create mask in the case of resynthesize or ColorAttrFunc or NetAttrFunc (not if AnyGANAttrFunc)
         use_mask: bool = True if classes else False
         if use_mask:
             mask_creator = MaskCreator(
@@ -147,10 +153,6 @@ class SegDiffEditPipeline:
         pred_original_samples = list()
         pts = list()
 
-        additional_setup = self.diffusion_wrapper._additional_setup(
-            prompt=prompt, guidance_scale=guidance_scale
-        )
-
         for step_idx, timestep in enumerate(self.diffusion_wrapper.scheduler.timesteps):
             model_output = self.diffusion_wrapper.predict_model_output(
                 xt, timestep, **additional_setup
@@ -166,6 +168,8 @@ class SegDiffEditPipeline:
             xt, pred_original_sample = self.diffusion_wrapper.single_step(
                 model_output, timestep, xt, eta, variance_noise
             )
+            pred_original_samples.append(pred_original_sample)
+
             if attr_func is not None:
                 mask_to_use = (
                     mask if apply_mask_with_attr_func and mask is not None else None
@@ -180,19 +184,15 @@ class SegDiffEditPipeline:
                     mask=mask_to_use,
                     x_0=latent,
                 )
-            pred_original_samples.append(pred_original_sample)
-            pts.append(pt)
+                pts.append(pt)
 
         tensor = self.diffusion_wrapper.decode(xt)
         img = tensor_to_pil(tensor)
 
-        pred_original_samples = self.process_lists_of_tensors_and_decode(
-            pred_original_samples
-        )
-        pred_original_samples = tensors_to_pils(pred_original_samples)
+        pred_original_samples = self.process_lists_of_tensors(pred_original_samples)
 
-        pts = self.process_lists_of_tensors_and_decode(pts)
-        pts = tensors_to_pils(pts)
+        if pts:
+            pts = self.process_lists_of_tensors(pts)
 
         segmentation = tensor_to_pil(segmentation)
         mask = tensor_to_pil(mask) if mask is not None else None
