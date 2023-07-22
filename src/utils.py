@@ -1,15 +1,8 @@
 # utils.py
 from typing import Union, List, Optional
-from IPython.display import display
-import matplotlib.pyplot as plt
-import numpy as np
-from PIL import Image
 import torch
 from diffusers import UNet2DModel, UNet2DConditionModel
-from itertools import zip_longest
 from tqdm import tqdm
-
-from transforms import tensor_to_pil
 
 
 def apply_mask(
@@ -34,6 +27,24 @@ def get_device(verbose: bool = False) -> torch.device:
     return device
 
 
+def initialize_random_samples(
+    model,
+    num_inference_steps: int,
+    eta: float,
+    generator: torch.Generator,
+):
+    xt = generate_random_samples(1, model.unet, generator=generator)
+
+    if eta > 0:
+        zs = generate_random_samples(
+            num_inference_steps, model.unet, generator=generator
+        )
+    else:
+        zs = None
+
+    return xt, zs
+
+
 def generate_random_samples(
     num_samples: int,
     unet: UNet2DModel | UNet2DConditionModel,
@@ -56,77 +67,6 @@ def generate_random_samples(
         ]  # type: ignore
 
 
-def get_num_rows(num_images: int, num_cols: int) -> int:
-    """
-    Calculates the number of rows needed to display a given number of images in a grid with a given number of columns.
-
-    Args:
-        num_images (int): The total number of images to display.
-        num_cols (int): The number of columns in the grid.
-
-    Returns:
-        int: The number of rows needed to display all the images in the grid.
-    """
-    num_rows = num_images // num_cols
-    if num_images % num_cols > 0:
-        num_rows += 1
-    return num_rows
-
-
-def show_images_in_a_grid(
-    images: List[Image.Image],
-    titles: list,
-    num_cols: int,
-    super_title: Optional[str] = None,
-):
-    num_rows = get_num_rows(len(images), num_cols)
-    fig, axarr = plt.subplots(num_rows, num_cols)
-    axarr = np.array(
-        axarr
-    )  # Make sure axarr is always an array, even when it's a single AxesSubplot object
-
-    for i, img in enumerate(images):
-        row = i // num_cols
-        col = i % num_cols
-        ax = axarr[row, col] if num_rows > 1 and num_cols > 1 else axarr[max(row, col)]
-        ax.imshow(img, cmap="viridis")
-        ax.set_title(titles[i])
-        ax.axis("off")
-    if super_title is not None:
-        fig.suptitle(super_title)
-    plt.tight_layout()
-
-
-def display_samples(
-    samples: Union[List[torch.Tensor], torch.Tensor],
-    titles: List[str] = [],
-    num_cols: int = 1,
-    super_title: Optional[str] = None,
-) -> None:
-    """
-    Displays the provided image samples.
-    If more than one column is specified, displays the images in a grid.
-    """
-    if isinstance(samples, torch.Tensor):
-        samples = [samples]
-
-    image_pils = tensor_to_pil(samples)
-
-    if num_cols > 1:
-        show_images_in_a_grid(
-            image_pils, titles=titles, num_cols=num_cols, super_title=super_title
-        )
-    else:
-        if super_title:
-            print(super_title)
-            print("-" * len(super_title))  # add a separator line
-        for title, img_pil in zip_longest(titles, image_pils, fillvalue=""):
-            print(f"Title: {title}")
-            plt.figure()
-            display(img_pil)
-            plt.show()
-
-
 def create_progress_bar(steps: torch.Tensor | range, show_progbar: bool):
     enumerator = enumerate(steps)
     if show_progbar:
@@ -139,3 +79,14 @@ def set_seed(seed: int | None) -> torch.Generator:
     if seed is None:
         seed = int(torch.randint(int(1e6), (1,)))
     return torch.manual_seed(seed)
+
+
+# something like this I could use:
+# directions = ){
+#        'eye_openness':            (54,  7,  8,  20),
+#        'smile':                   (46,  4,  5, -20),
+#        'trimmed_beard':           (58,  7,  9,  20),
+#        'white_hair':              (57,  7, 10, -24),
+#        'lipstick':                (34, 10, 11,  20)
+#    }
+# editor.apply_ganspace(latents, ganspace_pca, [directions["white_hair"], directions["eye_openness"], directions["smile"]])
