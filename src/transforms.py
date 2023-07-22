@@ -1,5 +1,4 @@
 from typing import List, Union
-import numpy as np
 import torch
 from torchvision import transforms
 from PIL import Image
@@ -14,9 +13,6 @@ def tensor_to_pil(tensor_img: torch.Tensor) -> Image.Image:
     transform_normal = transforms.Compose(
         [
             transforms.Lambda(_scale_zero_one),
-            Lambda(lambda t: t.permute(1, 2, 0)),  # CHW to HWC
-            Lambda(lambda t: t * 255.0),  # back to 0-255
-            Lambda(lambda t: t.cpu().detach().numpy().astype(np.uint8)),
             transforms.ToPILImage(),
         ]
     )
@@ -34,21 +30,19 @@ def tensor_to_pil(tensor_img: torch.Tensor) -> Image.Image:
     elif tensor_img.dim() == 4:
         assert tensor_img.shape[0] == 1
         pil_img = transform_normal(tensor_img.squeeze(0))
+    else:
+        raise Exception("Input tensor has wrong shape")
     return pil_img
 
 
 def tensors_to_pils(tensor_imgs: List[torch.Tensor]) -> List[Image.Image]:
-    pil_imgs = list()
-
-    for img in tensor_imgs:
-        pil_image = tensor_to_pil(img)
-        pil_imgs.append(pil_image)
+    pil_imgs = [tensor_to_pil(tensor_img) for tensor_img in tensor_imgs]
 
     return pil_imgs
 
 
 def _scale_minus_one_one(input: torch.Tensor) -> torch.Tensor:
-    return (input * 2 - 1).clamp(-1, 1)
+    return input * 2 - 1
 
 
 def pil_to_tensor(
@@ -61,8 +55,7 @@ def pil_to_tensor(
         ]
     )
     if isinstance(pil_imgs, Image.Image):
-        tensor_imgs = transform(pil_imgs)
-        tensor_imgs = tensor_imgs.unsqueeze(0)  # Reshape to (B, C, H, W) # type: ignore
+        tensor_imgs = transform(pil_imgs).unsqueeze(0)  # Reshape to (B, C, H, W)
     elif isinstance(pil_imgs, list):
         tensor_imgs = torch.cat(
             [transform(img).unsqueeze(0) for img in pil_imgs]  # type: ignore
