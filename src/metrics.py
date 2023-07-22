@@ -46,10 +46,10 @@ def avg_increase_decrease_per_attribute(
             '36 Wearing_Lipstick: 1.0046115458011626',
             '2 Attractive: 0.9877155601978302',}
         Predictions for anyGAN prediction dimension 1:
-        {'20 Male: 1.0743066191673278',
-        '17 Gray_Hair: 0.8982777118682861',
-        '10 Blurry: 0.7925063610076905',
-        '14 Double_Chin: 0.7053128719329834',}
+            {'20 Male: 1.0743066191673278',
+            '17 Gray_Hair: 0.8982777118682861',
+            '10 Blurry: 0.7925063610076905',
+            '14 Double_Chin: 0.7053128719329834',}
 
     """
     predictor = _get_pretrained_anyGAN()

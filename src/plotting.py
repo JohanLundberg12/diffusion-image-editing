@@ -53,10 +53,12 @@ def get_num_rows(num_images: int, num_cols: int) -> int:
     Returns:
         int: The number of rows needed to display all the images in the grid.
     """
-    num_rows = num_images // num_cols
-    if num_images % num_cols > 0:
+    num_rows, num_cols = divmod(num_images, num_cols)  # return x // y, x % y
+
+    if num_rows > 0:
         num_rows += 1
-    return num_rows
+
+    return num_cols, num_rows
 
 
 def show_images_in_a_grid(
