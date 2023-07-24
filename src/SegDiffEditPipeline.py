@@ -7,14 +7,24 @@ from PIL import Image
 from diffusers.utils import BaseOutput
 
 from attr_functions import AttrFunc
-from diffusion_classes import DiffusionSynthesizer
 from models import SegmentationModel
 from mask_creator import MaskCreator
-from stable_diffusion_wrapper import StableDiffusionWrapper
+
+from diffusion_classes import DDPM, LDM, SD
 
 
+from ddpm_inversion import invert, reverse_step
+from ddim_inversion import ddim_inversion
+from diffusion_utils import (
+    diffusion_loop,
+    get_noise_pred,
+    get_variance_noise,
+    single_step,
+)
 from transforms import tensor_to_pil, pil_to_tensor
 from utils import apply_mask, get_device, generate_random_samples
+
+from constants import ATTRS
 
 
 @dataclass
@@ -24,17 +34,17 @@ class EditorOutput(BaseOutput):
     model_outputs: Optional[List[torch.Tensor]] = None
     segmentation: Optional[List[Image.Image]] = None
     mask: Optional[List[Image.Image]] = None
-    pts: Optional[List[Image.Image]] = None
 
 
 class SegDiffEditPipeline:
     def __init__(
         self,
-        diffusion_wrapper: DiffusionSynthesizer | StableDiffusionWrapper,
+        diffusion_wrapper: DDPM | LDM | SD,
         segmentation_model: SegmentationModel,
     ):
         self.diffusion_wrapper = diffusion_wrapper
         self.segmentation_model = segmentation_model
+
         self.device = get_device()
 
     # move to helper functions or make it part of the decode call?
@@ -52,24 +62,29 @@ class SegDiffEditPipeline:
         tensor_stacked = torch.stack(tensors, dim=0).squeeze()
         return self.to_pil_and_decode_batch_of_tensors(tensor_stacked)
 
+    def check_inputs(self, attr_func, classes, eta, resynthesize, zs):
+        pass
+
     def edit_image(
         self,
         img: Image.Image,
         xt: torch.Tensor | None,
-        model_outputs: List[torch.Tensor] | None,
+        model_outputs: List[torch.Tensor] = [],
         eta: float = 0,
         zs: Optional[torch.Tensor] = None,
         classes: List[int] = [],
         resynthesize: bool = False,
         attr_func: AttrFunc | None = None,
-        apply_mask_with_attr_func: bool = False,
         dilate_mask: bool = False,
         prompt: str = "",
-        guidance_scale: float = 7.5,
+        cfg_scale: float = 7.5,
+        inversion_method: str = "ddim",
+        denoising_method: str = "ddim",
+        Tskip: Optional[int] = None,
     ) -> EditorOutput:
         # 1. apply mask on cls area to change it (resynthesize or not)
-        # 2. apply a strategy, with masking, i.e. to make eyes blue
-        # 3. apply a strategy, nothing else, i.e. apply the strategy to the whole image
+        # 2. apply an attr_func, with masking, i.e. to make eyes blue
+        # 3. apply an attr_func, nothing else, i.e. apply the attr_func to the whole image
         # If you want to resynthesize the cls area and make a color change, it is
         # better to first resynthesize the area to obtain a new x_0 and then edit that image with a color change.
         # Alternatively, you can recompute the mask after some timestep t before applying the color change.
@@ -77,46 +92,45 @@ class SegDiffEditPipeline:
         # This method does the following:
         # 1. Segments the image.
         # 2. Creates a mask from the segmentation.
-        # 3. If xt is none, it infers it using the reverse inverse process
+        # 3. If xt is none, an inversion method inverts the image to noise xt.
         # 4. Makes the necessary changes to xt and zs using the mask.
         # 5. Runs the diffusion process on the modified xt and zs and
-        # applies an attr function at each timestep.
+        # applies an attr function at each timestep if specified.
 
-        if (zs is not None and eta == 0) or (zs is None and eta > 0):
-            raise ValueError(
-                "If zs is not None, eta must be greater than 0. If zs is empty, eta must be 0"
-            )
+        for x in classes:
+            assert 0 <= x < len(ATTRS)
 
-        if not resynthesize and attr_func is None:
-            raise ValueError(
-                "If resynthesize is False, attr_func must be provided. Or no edit is made"
-            )
+        # Check inputs are valid
+        self.check_inputs(attr_func, classes, eta, resynthesize, zs)
 
-        if not classes and attr_func is None:
-            raise ValueError(
-                "If classes is empty, attr_func must be provided. Or not edit is made"
-            )
-
+        # prepare inputs
         tensor = pil_to_tensor(img).to(self.device)
         segmentation = self.segmentation_model(tensor)
         latent = self.diffusion_wrapper.encode(tensor)
 
-        additional_setup = self.diffusion_wrapper._additional_setup(
-            prompt=prompt, guidance_scale=guidance_scale
-        )
+        # inversion x_t <- x_0
+        if inversion_method == "ddim" and xt is None:
+            assert eta == 0
 
-        # infer xt if not provided, mostly for real images, but also works for synthetic images
-        if xt is None and eta > 0:
-            raise NotImplementedError(
-                "If xt is not provided, eta must be 0. Reverse ODE only for deterministic path"
+            xt = ddim_inversion(
+                model=self.diffusion_wrapper.model,
+                x0=latent,
+                prompt=prompt,
+                cfg_scale=cfg_scale,
             )
-        elif xt is None and eta == 0:
-            xt, model_outputs = self.diffusion_wrapper.reverse_inverse_process(
-                latent,
-                inversion=True,
-                **additional_setup,
+            xts = None
+        elif inversion_method == "ddpm" and xt is None:
+            xt, zs, xts = invert(
+                model=self.diffusion_wrapper.model,
+                x0=latent,
+                num_inference_steps=self.diffusion_wrapper.scheduler.num_inference_steps,
+                eta=eta,
+                prompt=prompt,
+                cfg_scale=cfg_scale,
+                prog_bar=True,
             )
-            model_outputs = model_outputs[::-1]
+        else:
+            xts = None
 
         # only create mask in the case of resynthesize or ColorAttrFunc or NetAttrFunc (not if AnyGANAttrFunc)
         use_mask: bool = True if classes else False
@@ -135,68 +149,97 @@ class SegDiffEditPipeline:
         # if no mask, x_t and zs are not to be changed with a masking operation but with a attr_func
         # if resynthesize, then x_t and zso are edited with a masking operation using x_tv, zsv
         if isinstance(mask, torch.Tensor) and resynthesize:
-            xtv = generate_random_samples(1, self.diffusion_wrapper.unet)
+            xtv = generate_random_samples(1, self.diffusion_wrapper.model.unet).to(
+                "cuda"
+            )
 
             if isinstance(xt, torch.Tensor):
                 xt = apply_mask(mask, xt, xtv)  # type: ignore
 
             if eta > 0:
-                if not zs:
+                if zs is None:
                     raise ValueError("eta > 0 and zs is empty")
                 zsv = generate_random_samples(
                     self.diffusion_wrapper.scheduler.num_inference_steps,
-                    self.diffusion_wrapper.unet,
+                    self.diffusion_wrapper.model.unet,
                 )
                 zs = apply_mask(mask, zs, zsv)  # type: ignore
 
+        new_xts = list()
         new_model_outputs = list()
         pred_original_samples = list()
-        pts = list()
 
+        if prompt is not None:
+            text_emb = self.diffusion_wrapper.additional_prep(
+                self.diffusion_wrapper.model, prompt
+            )
+        else:
+            text_emb = None
+
+        if xts is not None:
+            xt = xts[Tskip]
+            zs = zs[Tskip:]
+
+        # for step_idx, timestep in diffusion_loop(self.diffusion_wrapper.model, zs):
         for step_idx, timestep in enumerate(self.diffusion_wrapper.scheduler.timesteps):
-            model_output = self.diffusion_wrapper.predict_model_output(
-                xt, timestep, **additional_setup
-            )
-            if mask is not None and model_outputs is not None:
-                model_output = apply_mask(mask, model_outputs[step_idx], model_output)
+            with torch.no_grad():
+                noise_pred = get_noise_pred(
+                    self.diffusion_wrapper.model, xt, timestep, text_emb, cfg_scale
+                )
 
-            new_model_outputs.append(model_output)
+            if mask is not None:
+                noise_pred = apply_mask(mask, model_outputs[step_idx], noise_pred)
 
-            variance_noise = self.diffusion_wrapper.get_variance_noise(
-                zs, step_idx, eta
-            )
-            xt, pred_original_sample = self.diffusion_wrapper.single_step(
-                model_output, timestep, xt, eta, variance_noise
-            )
-            pred_original_samples.append(pred_original_sample)
+            variance_noise = get_variance_noise(zs, step_idx, eta)
 
+            if denoising_method == "ddpm" and Tskip is not None:
+                xt = reverse_step(
+                    model=self.diffusion_wrapper.model,
+                    model_output=noise_pred,
+                    timestep=timestep,
+                    sample=xt,
+                    eta=eta,
+                    variance_noise=variance_noise,
+                )
+            else:  # denoising_method == "ddim"
+                xt, pred_original_sample = single_step(
+                    model=self.diffusion_wrapper.model,
+                    model_output=noise_pred,
+                    timestep=timestep,
+                    sample=xt,
+                    eta=eta,
+                    variance_noise=variance_noise,
+                )
+
+            # nudge xt if attr_func
             if attr_func is not None:
-                mask_to_use = (
-                    mask if apply_mask_with_attr_func and mask is not None else None
-                )
-                xt, pt = attr_func.apply(
-                    input_image=xt,
-                    model_output=model_output,  # type: ignore
-                    timestep=timestep,  # type: ignore
-                    step_idx=step_idx,
-                    scheduler=self.diffusion_wrapper.scheduler,
-                    model=self.diffusion_wrapper,
-                    mask=mask_to_use,
-                    x_0=latent,
-                )
-                pts.append(pt)
+                if attr_func.kwargs["use_mask"] and mask is not None:
+                    attr_func.kwargs["mask"] = mask
+                else:
+                    attr_func.kwargs["mask"] = None
 
-        tensor = self.diffusion_wrapper.decode(xt)
+                xt = attr_func.apply(
+                    xt=xt,
+                    model_output=noise_pred,
+                    timestep=timestep,
+                    step_idx=step_idx,
+                    model=self.diffusion_wrapper,
+                    **attr_func.kwargs,
+                )
+
+            new_xts.append(xt)
+            new_model_outputs.append(noise_pred)
+            pred_original_samples.append(pred_original_sample.detach())
+
+        x0 = xt
+        tensor = self.diffusion_wrapper.decode(x0)
         img = tensor_to_pil(tensor)
 
         pred_original_samples = self.process_lists_of_tensors(pred_original_samples)
-
-        if pts:
-            pts = self.process_lists_of_tensors(pts)
 
         segmentation = tensor_to_pil(segmentation)
         mask = tensor_to_pil(mask) if mask is not None else None
 
         return EditorOutput(
-            img, pred_original_samples, new_model_outputs, segmentation, mask, pts
+            img, pred_original_samples, new_model_outputs, segmentation, mask
         )
