@@ -34,8 +34,6 @@ def sample_xts_from_x0(model, x0, num_inference_steps=50):
     """
     alpha_bar = model.scheduler.alphas_cumprod
     sqrt_one_minus_alpha_bar = (1 - alpha_bar) ** 0.5
-    alphas = model.scheduler.alphas
-    betas = 1 - alphas
     variance_noise_shape = (
         num_inference_steps,
         model.unet.in_channels,
@@ -259,10 +257,12 @@ def inversion_reverse_process(
     xt = xT.expand(1, -1, -1, -1)  # C x H x W -> 1 x C x H x W
     op = tqdm(timesteps[-zs.shape[0] :]) if prog_bar else timesteps[-zs.shape[0] :]
 
-    t_to_idx = {int(v): k for k, v in enumerate(timesteps[-zs.shape[0] :])}
+    timestep_to_idx = {
+        int(timestep): idx for idx, timestep in enumerate(timesteps[-zs.shape[0] :])
+    }
 
     for t in op:
-        idx = t_to_idx[int(t)]
+        idx = timestep_to_idx[int(t)]
 
         # 1. predict noise residual
         noise_pred = get_noise_pred(model, xt, t, context, cfg_scale)
@@ -271,8 +271,7 @@ def inversion_reverse_process(
 
         # 2. compute less noisy image and set x_t -> x_t-1
         xt = reverse_step(model, noise_pred, t, xt, eta=eta, variance_noise=z)
-        # xt = any_gan_attr_function(model, xt, noise_pred, t, 31)
-        # xt = color_attr_function(model, xt, noise_pred, t)
+
     return xt, zs
 
 
