@@ -1,5 +1,6 @@
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 import torch
+from tqdm import tqdm
 
 
 def calculate_variance(model, timestep):
@@ -95,6 +96,8 @@ def single_step(
     eta: float,
     variance_noise: torch.Tensor | None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Single step of the diffusion process for the DDIM method.
+    Extracts prev_sample, pred_original_sample from the DDIMSchedulerOutput"""
     scheduler_output = model.scheduler.step(
         model_output=model_output,
         timestep=timestep,
@@ -102,35 +105,33 @@ def single_step(
         eta=eta,
         variance_noise=variance_noise,
     )
-    xt, pred_original_sample = scheduler_output.to_tuple()
+    prev_sample, pred_original_sample = scheduler_output.to_tuple()
 
-    return xt, pred_original_sample
+    return prev_sample, pred_original_sample
 
 
 def diffusion_loop(
-    model, xt: torch.Tensor, eta: float, zs: torch.Tensor, text_emb=None, cfg_scale=3.5
-) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
-    new_model_outputs = list()
-    pred_original_samples = list()
+    model,
+    zs=None,
+    prog_bar=True,
+):
+    timesteps = model.scheduler.timesteps.to(model.device)
 
-    for step_idx, timestep in enumerate(model.scheduler.timesteps):
-        noise_pred = get_noise_pred(model, xt, timestep, text_emb, cfg_scale)
+    num_operations = zs.shape[0] if zs is not None else len(timesteps)
 
-        variance_noise = get_variance_noise(zs, step_idx, eta)
+    timestep_to_idx = {
+        int(timestep): step_idx
+        for step_idx, timestep in enumerate(timesteps[-num_operations:])
+    }
+    timesteps_to_iterate = timesteps[-num_operations:]
+    timesteps_iterator = (
+        tqdm(timesteps_to_iterate) if prog_bar else timesteps_to_iterate
+    )
 
-        xt, pred_original_sample = single_step(
-            model,
-            model_output=noise_pred,
-            timestep=timestep,
-            sample=xt,
-            eta=eta,
-            variance_noise=variance_noise,
-        )
+    for timestep in timesteps_iterator:
+        step_idx = timestep_to_idx[int(timestep)]
 
-        new_model_outputs.append(noise_pred)
-        pred_original_samples.append(pred_original_sample.detach())
-
-    return xt, new_model_outputs, pred_original_samples
+        yield step_idx, timestep
 
 
 def prep_text(model, prompt: str) -> torch.Tensor:
