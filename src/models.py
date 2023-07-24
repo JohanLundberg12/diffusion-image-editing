@@ -16,12 +16,14 @@ from diffusion_classes import DDPM, LDM, SD
 from utils import get_device
 
 
-def create_diffusion_model(name: str, sample_clipping: bool = False) -> DDPM | LDM | SD:
+def create_diffusion_model(name: str, sample_clipping: bool = True) -> DDPM | LDM | SD:
     device = get_device()
 
     if name == "ddpm":
         model_id = "google/ddpm-celebahq-256"
-        model = DDIMPipeline.from_pretrained(model_id).to(device)
+        model = DiffusionPipeline.from_pretrained(model_id)
+        model.scheduler = DDIMScheduler.from_config(model.scheduler.config)
+        model.to(device)
 
         # editing real images -> set this to False as
         # the reverse inverse process needs this to invert
@@ -29,6 +31,11 @@ def create_diffusion_model(name: str, sample_clipping: bool = False) -> DDPM | L
         # editing synthetic images, set this to True?
         # DDPM was trained with this flag=True
         model.scheduler.config.clip_sample = sample_clipping
+
+        # rescale_betas_zero_snr=True: https://huggingface.co/docs/diffusers/api/schedulers/ddim
+        # The paper Common Diffusion Noise Schedules and Sample Steps are Flawed claims that a mismatch between the training and inference settings leads to suboptimal inference generation results for Stable Diffusion.
+        # The abstract reads as follows:
+        # *We discover that common diffusion noise schedules do not enforce the last timestep to have zero signal-to-noise ratio (SNR)
 
         return DDPM(model)
 
