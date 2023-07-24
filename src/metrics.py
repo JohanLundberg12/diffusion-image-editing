@@ -1,10 +1,10 @@
 from collections import defaultdict
 import torch
 
-from segmentation_diffusion_editor_pipeline import SegDiffEditPipeline
+from SegDiffEditPipeline import SegDiffEditPipeline
 
 
-from attr_functions import _get_pretrained_anyGAN
+from models import get_pretrained_anyGAN
 from transforms import pil_to_tensor
 from utils import generate_random_samples
 
@@ -52,7 +52,7 @@ def avg_increase_decrease_per_attribute(
             '14 Double_Chin: 0.7053128719329834',}
 
     """
-    predictor = _get_pretrained_anyGAN()
+    predictor = get_pretrained_anyGAN()
     predictor.eval()
 
     ANY_GAN_ATTRS_DICT_REV = {v: k for k, v in ANY_GAN_ATTRS_DICT.items()}
@@ -150,7 +150,7 @@ def attribute_consistency(
         ...
         Young                         87.00%
     """
-    predictor = _get_pretrained_anyGAN()
+    predictor = get_pretrained_anyGAN()
     predictor.eval()
 
     accs = 0
