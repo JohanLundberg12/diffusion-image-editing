@@ -9,7 +9,7 @@ from base_diffusion import Diffusion
 
 from transforms import tensors_to_pils, tensor_to_pil
 from utils import generate_random_samples
-from diffusion_utils import diffusion_loop, encode_text
+from diffusion_utils import diffusion_loop, prep_text
 
 from transformers import CLIPTextModel, CLIPTokenizer
 
@@ -37,10 +37,6 @@ class SD(Diffusion):
 
         return sample
 
-    def _prep_text(self, prompt: str) -> torch.Tensor:
-        # add unconditional embedding
-        return torch.cat([encode_text(self.model, ""), encode_text(self.model, prompt)])
-
     def generate_image(
         self,
         xt,
@@ -53,7 +49,7 @@ class SD(Diffusion):
     ):
         self.model.scheduler.set_timesteps(num_inference_steps)
 
-        text_emb = self._prep_text(prompt)
+        text_emb = prep_text(self.model, prompt)
 
         if eta > 0 and zs is None:
             zs = generate_random_samples(

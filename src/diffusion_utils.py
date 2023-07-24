@@ -30,7 +30,7 @@ def compute_predicted_original_sample(sample, beta_prod_t, model_output, alpha_p
     return (sample - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
 
 
-def _tokenize_text(model, prompt):
+def tokenize_text(model, prompt):
     """Tokenize prompt for conditional diffusion."""
     text_input = model.tokenizer(
         [prompt],
@@ -44,7 +44,7 @@ def _tokenize_text(model, prompt):
 
 def encode_text(model, prompts):
     """Encode prompt for conditional diffusion."""
-    text_input = _tokenize_text(model, prompts)
+    text_input = tokenize_text(model, prompts)
 
     with torch.no_grad():
         text_encoding = model.text_encoder(text_input.input_ids.to(model.device))[0]
@@ -131,3 +131,8 @@ def diffusion_loop(
         pred_original_samples.append(pred_original_sample.detach())
 
     return xt, new_model_outputs, pred_original_samples
+
+
+def prep_text(model, prompt: str) -> torch.Tensor:
+    # add unconditional embedding
+    return torch.cat([encode_text(model, ""), encode_text(model, prompt)])
