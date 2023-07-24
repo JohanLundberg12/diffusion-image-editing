@@ -1,18 +1,22 @@
 from abc import ABC, abstractmethod
-from typing import Tuple
 
-# import lpips
+import lpips
 import torch
-from torchvision import models
 
-from segmentation_model import SegmentationModel
+from models import SegmentationModel
 
-from utils import get_alpha_prod_t, pred_original_samples
+from diffusion_utils import compute_predicted_original_sample
 
 
 def l2_norm(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Calculate the l2 norm between two tensors."""
     return torch.sqrt(torch.sum((x - y) ** 2))
+
+
+def apply_lpips(xt, x0, loss_fn_vgg):
+    loss = loss_fn_vgg(xt, x0)
+
+    return loss
 
 
 def single_color_loss(images: torch.Tensor, idx: int, target: float) -> torch.Tensor:
@@ -33,16 +37,38 @@ def color_loss(
     return color_loss
 
 
+def _init_loss_scales(loss_scales: torch.Tensor, t1: int, t2: int) -> torch.Tensor:
+    num_elements = loss_scales.size().numel()
+    interval_len = t2 - t1
+
+    if num_elements != interval_len:
+        if num_elements < interval_len and num_elements == 1:
+            loss_scales = loss_scales.repeat(interval_len)
+        else:
+            raise ValueError(
+                f"loss_scales must be of length {interval_len} or 1, but got {num_elements}"
+            )
+
+    return loss_scales
+
+
 class AttrFunc(ABC):
     """Abstract base class for different attribute function strategies."""
 
     def __init__(
-        self,
-        loss_scale: float = 1.0,
-        stop_at=None,
+        self, loss_scales: torch.Tensor, t1: int = 0, t2: int = 50, **kwargs
     ) -> None:
-        self.loss_scale = loss_scale
-        self.stop_at = stop_at
+        self.kwargs = kwargs
+        self.loss_scales = _init_loss_scales(loss_scales, t1, t2)
+        self.t1 = t1
+        self.t2 = t2
+
+        # prepare lpips metric
+        if kwargs.get("use_lpips"):
+            self.loss_fn_vgg = lpips.LPIPS(net="vgg")
+            self.metric = apply_lpips
+        if kwargs.get("use_l2"):
+            self.metric = l2_norm
 
     @property
     def name(self) -> str:
@@ -50,52 +76,88 @@ class AttrFunc(ABC):
         return self.__class__.__name__
 
     @abstractmethod
-    def loss(self, p_t: torch.Tensor, **kwargs) -> torch.Tensor:
+    def loss(self, pred_original_sample: torch.Tensor, **kwargs) -> torch.Tensor:
         """Calculate the loss."""
-        pass
+        raise NotImplementedError
+
+    def calculate_loss(
+        self, pred_original_sample: torch.Tensor, **kwargs
+    ) -> torch.Tensor:
+        """Calculate the loss and do something with it."""
+        if kwargs["mask_pred_original_sample"]:
+            lambda_ = kwargs["lambda"]
+            metric = kwargs["metric"]
+            mask = kwargs["mask"]
+            x_0 = kwargs["x_0"]
+
+            if kwargs.get("use_lpips"):
+                attr_loss = self.loss(mask * pred_original_sample) + lambda_ * metric(
+                    1 - mask * pred_original_sample, x_0, self.loss_fn_vgg
+                )
+            elif kwargs.get("use_l2"):
+                attr_loss = self.loss(mask * pred_original_sample) + lambda_ * metric(
+                    1 - mask * pred_original_sample, x_0
+                )
+            else:
+                raise ValueError("No metric specified")
+        else:
+            attr_loss = self.loss(pred_original_sample, **kwargs)
+
+        return attr_loss
+
+    def edit_attr_grad(self, attr_grad, **kwargs):
+        if kwargs.get("mask_attr_grad"):
+            attr_grad = kwargs.get("mask") * attr_grad
+
+        return attr_grad
+
+    def get_attr_grad(self, xt, pred_original_sample, loss_scale, **kwargs):
+        attr_loss = self.calculate_loss(pred_original_sample, **kwargs)
+        attr_loss = attr_loss * loss_scale
+        attr_grad = -torch.autograd.grad(attr_loss, xt)[0]
+        attr_grad = self.edit_attr_grad(attr_grad, **kwargs)
+
+        return attr_grad
 
     def apply(
         self,
-        input_image,
-        model_output,
-        timestep,
-        step_idx,
-        scheduler,
-        model,
-        mask=None,
-        x_0=None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Apply the attribute function strategy to update the input image."""
+        xt,  # must have parameter
+        model_output,  # must have parameter
+        timestep,  # must have parameter
+        step_idx,  # must have parameter
+        model,  # must have parameter
+        **kwargs,
+    ) -> torch.Tensor:
+        """Apply the attribute function strategy to update the input image.
+        Kwargs could be:
+            - use_mask: to use a mask
+            - mask: torch.Tensor (mask to apply to the pred_original_sample or to the attribute gradient)
+            - x_0: torch.Tensor (original x0)
+            - mask_attr_grad: bool (whether to mask the attr_grad)
+            - metric: callable (how to regularize the loss)
+            - lambda: float (weight of the regularization)
 
-        input_image = input_image.detach().requires_grad_(True)
+        """
 
-        alpha_prod_t = get_alpha_prod_t(scheduler.alphas_cumprod, timestep)
-        p_t = pred_original_samples(input_image, alpha_prod_t, model_output)
+        # don't apply attr func if we are outside the interval
+        if step_idx < self.t1 or step_idx >= self.t2:
+            return xt
+        else:
+            loss_scale = self.loss_scales[step_idx]
 
-        if self.stop_at is not None and step_idx >= self.stop_at:
-            return input_image, p_t
+        xt = xt.detach().requires_grad_(True)
+        alpha_prod_t = model.scheduler.alphas_cumprod[timestep]
+        beta_prod_t = 1 - alpha_prod_t
+        pred_original_sample = compute_predicted_original_sample(
+            xt, beta_prod_t, model_output, alpha_prod_t
+        )
+        pred_original_sample = model.decode(pred_original_sample)
 
-        # if mask is not None and x_0 is not None:
-        #    attr_loss = self.loss(mask * p_t) + l2_norm(1 - mask * p_t, x_0)
-        # else:
-        #    attr_loss = self.loss(p_t)
+        attr_grad = self.get_attr_grad(xt, pred_original_sample, loss_scale, **kwargs)
 
-        p_t = model.decode(p_t)
+        xt = xt.detach() + attr_grad * alpha_prod_t**2
 
-        attr_loss = self.loss(p_t)
-        attr_loss = attr_loss * self.loss_scale
-
-        if step_idx % 5 == 0:
-            print(step_idx, "loss:", attr_loss.item())
-
-        attr_grad = -torch.autograd.grad(attr_loss, input_image)[0]
-
-        if mask is not None:
-            attr_grad = mask * attr_grad
-
-        input_image = input_image.detach() + attr_grad * alpha_prod_t**2
-
-        return input_image, p_t
+        return xt
 
 
 class SingleColorAttrFunc(AttrFunc):
@@ -144,51 +206,53 @@ class NetAttrFunc(AttrFunc):
         super().__init__(**kwargs)
         self.segmentation_model = segmentation_model
         self.idx_for_class = idx_for_class
+        self.norm_factor = None
 
-    def loss(self, img, i):
-        out = self.segmentation_model(img)[0]
-        out = torch.nn.functional.softmax(out, dim=1)
-        out = out.sum(dim=(2, 3)) / (512 * 512)
-        out = out[0, self.idx_for_class]
-        out = out.sum()
+    def loss(self, img):
+        out = self.segmentation_model.net(img)[0]  # 1, 19, 256, 256
 
-        return out
+        # get cls out
+        # out_cls = out[0, self.idx_for_class]  # 256, 256
+        # out_softmax = torch.nn.functional.softmax(out_cls, dim=1)  # 256, 256
+        # out_sum = out_softmax.sum(dim=(0, 1)) / (256 * 256)  # 19
+        # val = out_sum.sum()
 
+        # other approach
+        out_softmax = torch.nn.functional.softmax(out, dim=1)  # 1, 19, 256, 256
+        out_sum = out_softmax.sum(dim=(2, 3)) / (256 * 256)  # 1, 19
+        out_cls = out_sum[0, self.idx_for_class]
 
-def _load_model(model: torch.nn.Module, state_dict_path: str) -> torch.nn.Module:
-    """Load a model from a state dict."""
+        if self.norm_factor is None:
+            # Compute the normalization factor as the sum of the mask values
+            mask = torch.any(
+                torch.stack(
+                    [(torch.argmax(out, dim=1) == idx) for idx in self.idx_for_class]
+                ),
+                dim=0,
+            ).float()
 
-    # load model weights
-    state_dict = torch.load(state_dict_path, map_location="cuda")["state_dict"]
+            # Compute the normalization factor as the sum of the mask values
+            self.norm_factor = mask.sum()
 
-    # load weights to model
-    model.load_state_dict(state_dict)
+        # If norm_factor is 0, it means that there are no pixels for this class. Avoid dividing by zero.
+        if self.norm_factor > 0:
+            val = out_cls.sum() / self.norm_factor
+        else:
+            val = out_cls.sum()
 
-    return model
+        print("val: ", val)
 
-
-def _get_pretrained_anyGAN():
-    # manual download of pretrained models:
-    # URL = "https://hanlab.mit.edu/projects/anycost-gan/files/attribute_predictor.pt"
-
-    predictor = models.resnet50()
-    predictor.fc = torch.nn.Linear(predictor.fc.in_features, 40 * 2)
-    predictor = _load_model(predictor, "../attribute_predictor.pt")
-
-    return predictor.to("cuda")
+        return val
 
 
 class AnyGANAttrFunc(AttrFunc):
-    def __init__(self, idx_for_class, **kwargs) -> None:
+    def __init__(self, predictor, idx_for_class, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.model = _get_pretrained_anyGAN()
+        self.predictor = predictor
         self.idx_for_class = idx_for_class
 
-    def loss(self, img):
-        attr = self.model(img).view(-1, 40, 2)
-        attr_max_preds = torch.argmax(attr, dim=2)
-
-        attr_max_value_idx = attr_max_preds[0][self.idx_for_class]
-        max_class_value = attr[0][self.idx_for_class][0][attr_max_value_idx]
+    def loss(self, xt):
+        attr = self.predictor(xt).view(-1, 40, 2)
+        max_class_value = attr[0][self.idx_for_class].max()
 
         return max_class_value
