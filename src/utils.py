@@ -7,15 +7,10 @@ from tqdm import tqdm
 
 def apply_mask(
     mask: torch.Tensor,
-    zo: Union[torch.Tensor, List[torch.Tensor]],
-    zv: Union[torch.Tensor, List[torch.Tensor]],
+    zo: torch.Tensor,
+    zv: torch.Tensor,
 ) -> Union[torch.Tensor, List[torch.Tensor]]:
-    if isinstance(zo, List) and isinstance(zv, List):
-        return [mask * zv_i + ((1 - mask) * zo_i) for zv_i, zo_i in zip(zv, zo)]
-    elif isinstance(zo, torch.Tensor) and isinstance(zv, torch.Tensor):
-        return mask * zv + ((1 - mask) * zo)
-    else:
-        raise TypeError("zo and zv must be of the same type")
+    return mask * zv + ((1 - mask) * zo)
 
 
 def get_device(verbose: bool = False) -> torch.device:
@@ -49,22 +44,16 @@ def generate_random_samples(
     num_samples: int,
     unet: UNet2DModel | UNet2DConditionModel,
     generator: Optional[torch.Generator] = None,
-) -> Union[torch.Tensor, List[torch.Tensor]]:
-    if num_samples == 1:
-        return torch.randn(
-            (
-                1,
-                unet.config.in_channels,  # type: ignore
-                unet.config.sample_size,  # type: ignore
-                unet.config.sample_size,  # type: ignore
-            ),
-            generator=generator,  # type: ignore
-        ).to("cuda")
-    else:
-        return [
-            generate_random_samples(1, unet, generator=generator)
-            for _ in range(num_samples)
-        ]  # type: ignore
+) -> torch.Tensor:
+    return torch.randn(
+        (
+            num_samples,
+            unet.config.in_channels,  # type: ignore
+            unet.config.sample_size,  # type: ignore
+            unet.config.sample_size,  # type: ignore
+        ),
+        generator=generator,  # type: ignore
+    ).to("cuda")
 
 
 def create_progress_bar(steps: torch.Tensor | range, show_progbar: bool):
