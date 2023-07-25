@@ -141,3 +141,6 @@ wandb/
 #images
 vid_tmp/
 
+#mp4
+.mp4
+
