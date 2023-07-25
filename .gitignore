@@ -138,3 +138,6 @@ logs/
 __pycache__
 wandb/
 
+#images
+.jpeg
+

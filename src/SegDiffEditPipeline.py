@@ -70,7 +70,7 @@ class SegDiffEditPipeline:
             raise ValueError("eta == 0 and zs is not empty")
 
         if attr_func is None:
-            if mask or resynthesize is None:
+            if mask is None or resynthesize is None:
                 raise ValueError(
                     "attr_func is None and classes and mask is None implies no edit"
                 )
