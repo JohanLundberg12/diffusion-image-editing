@@ -25,10 +25,7 @@ def create_diffusion_model(name: str, sample_clipping: bool = True) -> DDPM | LD
         model.scheduler = DDIMScheduler.from_config(model.scheduler.config)
         model.to(device)
 
-        # editing real images -> set this to False as
-        # the reverse inverse process needs this to invert
-        # and reconstruct the image properly
-        # editing synthetic images, set this to True?
+        # sample_clip=True for synthetic data, false for real data
         # DDPM was trained with this flag=True
         model.scheduler.config.clip_sample = sample_clipping
 

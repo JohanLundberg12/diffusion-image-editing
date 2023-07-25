@@ -1,15 +1,30 @@
 # utils.py
-from typing import Union, List, Optional
+from typing import List, Optional
 import torch
 from diffusers import UNet2DModel, UNet2DConditionModel
+from PIL import Image
 from tqdm import tqdm
+
+from transforms import tensor_to_pil
+
+
+def to_pil_and_decode_batch_of_tensors(
+    model, tensor: torch.Tensor
+) -> List[Image.Image]:
+    return [tensor_to_pil(model.decode(t.unsqueeze(0))) for t in tensor]
+
+
+# move to helper functions or make it part of the decode call?
+def process_lists_of_tensors(model, tensors: List[torch.Tensor]) -> List[Image.Image]:
+    tensor_stacked = torch.stack(tensors, dim=0).squeeze()
+    return to_pil_and_decode_batch_of_tensors(model, tensor_stacked)
 
 
 def apply_mask(
     mask: torch.Tensor,
     zo: torch.Tensor,
     zv: torch.Tensor,
-) -> Union[torch.Tensor, List[torch.Tensor]]:
+) -> torch.Tensor:
     return mask * zv + ((1 - mask) * zo)
 
 
@@ -41,10 +56,13 @@ def initialize_random_samples(
 
 
 def generate_random_samples(
-    num_samples: int,
+    num_samples: int | None,
     unet: UNet2DModel | UNet2DConditionModel,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
+    if num_samples is None:
+        num_samples = 1
+
     return torch.randn(
         (
             num_samples,
