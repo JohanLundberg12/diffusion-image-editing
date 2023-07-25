@@ -87,7 +87,9 @@ def inversion_forward_process(
     prog_bar=False,
 ):
     if prompt is not None:
-        context = encode_text(model, prompt)
+        text_emb = encode_text(model, prompt)
+        uncond_emb = encode_text(model, "")
+        context = torch.cat([text_emb, uncond_emb])
     else:
         context = None
 
@@ -193,7 +195,7 @@ def invert(
 
     # find xt, zs and xts - forward process
     xt, zs, xts = inversion_forward_process(
-        model, x0, etas=eta, prog_bar=True, num_inference_steps=num_inference_steps
+        model, x0, num_inference_steps=num_inference_steps, etas=eta, prompt=prompt, cfg_scale=cfg_scale, prog_bar=True
     )
     return xt, zs, xts
 

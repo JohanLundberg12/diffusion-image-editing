@@ -110,7 +110,7 @@ class SegDiffEditPipeline:
         return noise_map
 
     def edit_noise_maps(self, xt, zs, mask, resynthesize):
-        if mask is not None and resynthesize is not None:
+        if mask is not None and resynthesize:
             xt = self.edit_noise_map(xt, mask)
 
             if zs is not None:
@@ -191,6 +191,10 @@ class SegDiffEditPipeline:
             )
         else:
             raise ValueError(f"Unknown inversion method: {inversion_method}")
+        
+        if type(self.diffusion_wrapper) == SD:
+            alpha_channel = torch.ones((1, 1, 32, 32), device=xt.device)
+            mask = torch.cat((mask, alpha_channel), dim=1)
 
         return xt, zs, xts, mask, segmentation
 
@@ -247,7 +251,7 @@ class SegDiffEditPipeline:
                     self.diffusion_wrapper.model, xt, timestep, text_emb, cfg_scale
                 )
 
-            if mask is not None:
+            if mask is not None and model_outputs is not None:
                 noise_pred = apply_mask(mask, model_outputs[step_idx], noise_pred)
 
             variance_noise = get_variance_noise(zs, step_idx, eta)
@@ -273,7 +277,7 @@ class SegDiffEditPipeline:
 
             # nudge xt if attr_func
             if attr_func is not None:
-                if attr_func.kwargs["use_mask"] and mask is not None:
+                if attr_func.kwargs.get("use_mask", False) and mask is not None:
                     attr_func.kwargs["mask"] = mask
                 else:
                     attr_func.kwargs["mask"] = None

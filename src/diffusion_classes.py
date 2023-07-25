@@ -21,18 +21,23 @@ class SD(Diffusion):
         self.vae: AutoencoderKL = self.model.vae
         self.tokenizer: CLIPTokenizer = model.tokenizer
         self.text_encoder: CLIPTextModel = model.text_encoder
+        self.data_dimensionality = 32 # images of 256x256 are encoded to 32x32 whereas the mask of 512x512 is encoded to 64x64
+                                    # so we set this here to encode the mask to 32x32
 
     def encode(self, sample: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
             latent = self.vae.encode(sample).latent_dist.mode().detach()
         return 0.18215 * latent
 
-    def decode(self, latent: torch.Tensor) -> torch.Tensor:
+    def decode(self, latent: torch.Tensor, no_grad=True) -> torch.Tensor:
         latent = 1 / 0.18215 * latent
 
-        with torch.no_grad():
+        if no_grad:
+            with torch.no_grad():
+                sample = self.vae.decode(latent).sample
+        else:
             sample = self.vae.decode(latent).sample
-
+        
         return sample
 
     def additional_prep(self, model, prompt):
@@ -45,20 +50,23 @@ class LDM(Diffusion):
         model,
     ):
         super().__init__(model)
-        self.vae: VQModel = self.model.vae
+        self.vqvae: VQModel = self.model.vqvae
 
     def encode(self, sample: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
             sample = sample.to(dtype=torch.float32)
-            latent = self.vae.encode(sample).latents  # type: ignore
+            latent = self.vqvae.encode(sample).latents  # type: ignore
 
         return latent
 
-    def decode(self, latent: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
+    def decode(self, latent: torch.Tensor, no_grad=True) -> torch.Tensor:
+        if no_grad:
+            with torch.no_grad():
+                latent = latent.to(dtype=torch.float32)
+                sample = self.vqvae.decode(latent).sample  # type: ignore
+        else:
             latent = latent.to(dtype=torch.float32)
-            sample = self.vae.decode(latent).sample  # type: ignore
-
+            sample = self.vqvae.decode(latent).sample
         return sample
 
 

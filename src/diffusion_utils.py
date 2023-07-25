@@ -63,7 +63,6 @@ def get_noise_pred(
                 sample=latents_input,
                 timestep=t,
                 encoder_hidden_states=text_emb,
-                cfg_scale=cfg_scale,
             )["sample"]
             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
             noise_pred = noise_pred_uncond + cfg_scale * (

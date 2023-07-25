@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import List
 
 import lpips
 import torch
@@ -56,19 +57,22 @@ class AttrFunc(ABC):
     """Abstract base class for different attribute function strategies."""
 
     def __init__(
-        self, loss_scales: torch.Tensor, t1: int = 0, t2: int = 50, **kwargs
+        self, loss_scales: List[float] = [1], t1: int = 0, t2: int = 50, **kwargs
     ) -> None:
         self.kwargs = kwargs
-        self.loss_scales = _init_loss_scales(loss_scales, t1, t2)
+        self.loss_scales = torch.Tensor(loss_scales)
+        self.loss_scales = _init_loss_scales(self.loss_scales, t1, t2)
         self.t1 = t1
         self.t2 = t2
 
         # prepare lpips metric
-        if kwargs.get("use_lpips"):
+        if kwargs.get("use_lpips", False):
             self.loss_fn_vgg = lpips.LPIPS(net="vgg")
             self.metric = apply_lpips
-        if kwargs.get("use_l2"):
+        elif kwargs.get("use_l2", False):
             self.metric = l2_norm
+        else:
+            pass
 
     @property
     def name(self) -> str:
@@ -84,17 +88,22 @@ class AttrFunc(ABC):
         self, pred_original_sample: torch.Tensor, **kwargs
     ) -> torch.Tensor:
         """Calculate the loss and do something with it."""
-        if kwargs["mask_pred_original_sample"]:
-            lambda_ = kwargs["lambda"]
-            metric = kwargs["metric"]
-            mask = kwargs["mask"]
-            x_0 = kwargs["x_0"]
+        if kwargs.get("mask_pred_original_sample", False):
+            lambda_ = kwargs.get("lambda")
+            metric = kwargs.get("metric")
+            mask = kwargs.get("mask")
+            x_0 = kwargs.get("x_0")
+            
+            assert lambda_ is not None
+            assert metric is not None
+            assert mask is not None
+            assert x_0 is not None
 
-            if kwargs.get("use_lpips"):
+            if kwargs.get("use_lpips", False):
                 attr_loss = self.loss(mask * pred_original_sample) + lambda_ * metric(
                     1 - mask * pred_original_sample, x_0, self.loss_fn_vgg
                 )
-            elif kwargs.get("use_l2"):
+            elif kwargs.get("use_l2", False):
                 attr_loss = self.loss(mask * pred_original_sample) + lambda_ * metric(
                     1 - mask * pred_original_sample, x_0
                 )
@@ -106,7 +115,9 @@ class AttrFunc(ABC):
         return attr_loss
 
     def edit_attr_grad(self, attr_grad, **kwargs):
-        if kwargs.get("mask_attr_grad"):
+        if kwargs.get("mask_attr_grad", False):
+            if kwargs.get("mask", False) is None:
+                raise ValueError("No mask specified")
             attr_grad = kwargs.get("mask") * attr_grad
 
         return attr_grad
@@ -151,7 +162,7 @@ class AttrFunc(ABC):
         pred_original_sample = compute_predicted_original_sample(
             xt, beta_prod_t, model_output, alpha_prod_t
         )
-        pred_original_sample = model.decode(pred_original_sample)
+        pred_original_sample = model.decode(pred_original_sample, no_grad=False)
 
         attr_grad = self.get_attr_grad(xt, pred_original_sample, loss_scale, **kwargs)
 
@@ -168,7 +179,7 @@ class SingleColorAttrFunc(AttrFunc):
         self.target = target
         self.color_idx = color_idx
 
-    def loss(self, p_t: torch.Tensor) -> torch.Tensor:
+    def loss(self, p_t: torch.Tensor, **kwargs) -> torch.Tensor:
         return single_color_loss(p_t, self.color_idx, self.target)
 
 
