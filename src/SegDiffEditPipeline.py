@@ -85,8 +85,9 @@ class SegDiffEditPipeline:
         self.check_classes(classes)
 
         if classes is not None:
+            dim = img.shape[-1] // 8
             segmentation = self.segmentation_model(img)
-            mask = self.create_mask(classes, dilate_mask, segmentation)
+            mask = self.create_mask(classes, dilate_mask, segmentation, dim)
         else:
             segmentation = None
             mask = None
@@ -118,12 +119,12 @@ class SegDiffEditPipeline:
 
         return xt, zs
 
-    def create_mask(self, classes, dilate_mask, segmentation):
+    def create_mask(self, classes, dilate_mask, segmentation, dim):
         mask_creator = MaskCreator(
             dilate_mask=dilate_mask,
             resize_size=(
-                self.diffusion_wrapper.data_dimensionality,
-                self.diffusion_wrapper.data_dimensionality,
+                dim,
+                dim,
             ),
         )
         mask = mask_creator.create_mask(segmentation, classes=classes)
@@ -191,7 +192,7 @@ class SegDiffEditPipeline:
             )
         else:
             raise ValueError(f"Unknown inversion method: {inversion_method}")
-        
+
         if type(self.diffusion_wrapper) == SD:
             alpha_channel = torch.ones((1, 1, 32, 32), device=xt.device)
             mask = torch.cat((mask, alpha_channel), dim=1)

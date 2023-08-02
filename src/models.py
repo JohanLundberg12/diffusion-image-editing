@@ -1,9 +1,7 @@
-import os
 import torch
 from torchvision import models
 from torchvision import transforms
 from diffusers import (
-    DDIMPipeline,
     DDIMScheduler,
     DiffusionPipeline,
     StableDiffusionPipeline,
@@ -47,8 +45,6 @@ def create_diffusion_model(name: str, sample_clipping: bool = True) -> DDPM | LD
         return LDM(model)
 
     elif name == "sd":
-        access_token = os.environ.get("HF_TOKEN")
-
         model_id = "CompVis/stable-diffusion-v1-4"
         model = StableDiffusionPipeline.from_pretrained(model_id).to(device)
         model.scheduler = DDIMScheduler.from_config(model_id, subfolder="scheduler")
