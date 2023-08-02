@@ -11,6 +11,22 @@ from utils import generate_random_samples
 from constants import ANY_GAN_ATTRS_DICT
 
 
+def lpips(original: torch.Tensor, edited: torch.Tensor):
+    """
+    Calculates the LPIPS between the original and edited image.
+
+    Args:
+        original (torch.Tensor): The original image.
+        edited (torch.Tensor): The edited image.
+
+    Returns:
+        float: The LPIPS between the original and edited image.
+    """
+    loss_fn_vgg = lpips.LPIPS(net="vgg").to("cuda")
+    loss = loss_fn_vgg(original, edited)
+    return loss
+
+
 # possible TODO: add support for different attr_funcs and other parameters.
 def avg_increase_decrease_per_attribute(
     editor: SegDiffEditPipeline, diffusion_model, attr_func, n_samples, generator
