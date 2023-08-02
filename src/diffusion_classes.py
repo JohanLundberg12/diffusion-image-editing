@@ -21,8 +21,8 @@ class SD(Diffusion):
         self.vae: AutoencoderKL = self.model.vae
         self.tokenizer: CLIPTokenizer = model.tokenizer
         self.text_encoder: CLIPTextModel = model.text_encoder
-        self.data_dimensionality = 32 # images of 256x256 are encoded to 32x32 whereas the mask of 512x512 is encoded to 64x64
-                                    # so we set this here to encode the mask to 32x32
+        self.data_dimensionality = 32  # images of 256x256 are encoded to 32x32 whereas the mask of 512x512 is encoded to 64x64
+        # so we set this here to encode the mask to 32x32
 
     def encode(self, sample: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
@@ -37,7 +37,7 @@ class SD(Diffusion):
                 sample = self.vae.decode(latent).sample
         else:
             sample = self.vae.decode(latent).sample
-        
+
         return sample
 
     def additional_prep(self, model, prompt):
@@ -74,8 +74,8 @@ class DDPM(Diffusion):
     def __init__(self, model):
         super().__init__(model)
 
-    def encode(self, sample: torch.Tensor) -> torch.Tensor:
+    def encode(self, sample: torch.Tensor, **kwargs) -> torch.Tensor:
         return sample
 
-    def decode(self, latent: torch.Tensor) -> torch.Tensor:
+    def decode(self, latent: torch.Tensor, **kwargs) -> torch.Tensor:
         return latent

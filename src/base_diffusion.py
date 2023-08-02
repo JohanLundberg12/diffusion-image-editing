@@ -14,7 +14,7 @@ from diffusion_utils import (
     get_noise_pred,
 )
 
-from transforms import tensor_to_pil, tensors_to_pils
+from transforms import tensor_to_pil
 
 from utils import (
     create_progress_bar,
@@ -22,6 +22,7 @@ from utils import (
     initialize_random_samples,
     set_seed,
     generate_random_samples,
+    process_lists_of_tensors,
 )
 
 
@@ -78,12 +79,14 @@ class Diffusion:
             pred_original_samples.append(pred_original_sample.detach())
 
         x0 = xt
+        x0 = self.decode(x0)
 
         img = tensor_to_pil(x0)
-        pred_original_samples = torch.stack(
-            pred_original_samples, dim=0
-        ).squeeze()  # B, 1, C, H, W -> B, C, H, W
-        pred_original_samples = tensors_to_pils(pred_original_samples)
+        # pred_original_samples = torch.stack(
+        #    pred_original_samples, dim=0
+        # ).squeeze()  # B, 1, C, H, W -> B, C, H, W
+        pred_original_samples = process_lists_of_tensors(self, pred_original_samples)
+        # pred_original_samples = tensors_to_pils(pred_original_samples)
 
         return img, model_outputs, pred_original_samples
 
