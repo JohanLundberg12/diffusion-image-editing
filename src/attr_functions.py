@@ -57,11 +57,10 @@ class AttrFunc(ABC):
     """Abstract base class for different attribute function strategies."""
 
     def __init__(
-        self, loss_scales: List[float] = [1], t1: int = 0, t2: int = 50, **kwargs
+        self, loss_scale: float = 1, t1: int = 0, t2: int = 50, **kwargs
     ) -> None:
         self.kwargs = kwargs
-        self.loss_scales = torch.Tensor(loss_scales)
-        self.loss_scales = _init_loss_scales(self.loss_scales, t1, t2)
+        self.loss_scale = torch.Tensor(loss_scale).to("cuda")
         self.t1 = t1
         self.t2 = t2
 
@@ -93,7 +92,7 @@ class AttrFunc(ABC):
             metric = kwargs.get("metric")
             mask = kwargs.get("mask")
             x_0 = kwargs.get("x_0")
-            
+
             assert lambda_ is not None
             assert metric is not None
             assert mask is not None
@@ -154,7 +153,7 @@ class AttrFunc(ABC):
         if step_idx < self.t1 or step_idx >= self.t2:
             return xt
         else:
-            loss_scale = self.loss_scales[step_idx]
+            loss_scale = self.loss_scale
 
         xt = xt.detach().requires_grad_(True)
         alpha_prod_t = model.scheduler.alphas_cumprod[timestep]
@@ -219,7 +218,7 @@ class NetAttrFunc(AttrFunc):
         self.idx_for_class = idx_for_class
         self.norm_factor = None
 
-    def loss(self, img):
+    def loss(self, img, **kwargs):
         out = self.segmentation_model.net(img)[0]  # 1, 19, 256, 256
 
         # get cls out
@@ -262,7 +261,7 @@ class AnyGANAttrFunc(AttrFunc):
         self.predictor = predictor
         self.idx_for_class = idx_for_class
 
-    def loss(self, xt):
+    def loss(self, xt, **kwargs):
         attr = self.predictor(xt).view(-1, 40, 2)
         max_class_value = attr[0][self.idx_for_class].max()
 
