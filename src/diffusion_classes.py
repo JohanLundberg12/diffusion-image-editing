@@ -21,7 +21,7 @@ class SD(Diffusion):
         self.vae: AutoencoderKL = self.model.vae
         self.tokenizer: CLIPTokenizer = model.tokenizer
         self.text_encoder: CLIPTextModel = model.text_encoder
-        self.data_dimensionality = 32  # images of 256x256 are encoded to 32x32 whereas the mask of 512x512 is encoded to 64x64
+        # self.data_dimensionality = self.  # images of 256x256 are encoded to 32x32 whereas the mask of 512x512 is encoded to 64x64
         # so we set this here to encode the mask to 32x32
 
     def encode(self, sample: torch.Tensor) -> torch.Tensor:

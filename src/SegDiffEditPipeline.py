@@ -85,7 +85,7 @@ class SegDiffEditPipeline:
         self.check_classes(classes)
 
         if classes is not None:
-            dim = img.shape[-1] // 8
+            dim = self.diffusion_wrapper.data_dimensionality  # img.shape[-1] // 8
             segmentation = self.segmentation_model(img)
             mask = self.create_mask(classes, dilate_mask, segmentation, dim)
         else:
@@ -252,8 +252,8 @@ class SegDiffEditPipeline:
                     self.diffusion_wrapper.model, xt, timestep, text_emb, cfg_scale
                 )
 
-            if mask is not None and model_outputs is not None:
-                noise_pred = apply_mask(mask, model_outputs[step_idx], noise_pred)
+            # if mask is not None and model_outputs is not None:
+            #    noise_pred = apply_mask(mask, model_outputs[step_idx], noise_pred)
 
             variance_noise = get_variance_noise(zs, step_idx, eta)
 
@@ -283,8 +283,9 @@ class SegDiffEditPipeline:
                 else:
                     attr_func.kwargs["mask"] = None
 
-                xt = attr_func.apply(
+                xt, variance_noise = attr_func.apply(
                     xt=xt,
+                    zt=variance_noise,
                     model_output=noise_pred,
                     timestep=timestep,
                     step_idx=step_idx,

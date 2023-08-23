@@ -55,6 +55,7 @@ class Diffusion:
         generator=None,
         prompt="",
         cfg_scale=3.5,
+        return_xts=False,
     ):
         self.model.scheduler.set_timesteps(num_inference_steps)
 
@@ -62,6 +63,7 @@ class Diffusion:
 
         model_outputs = list()
         pred_original_samples = list()
+        xts = list()
 
         if eta > 0 and zs is None:
             zs = generate_random_samples(
@@ -78,17 +80,21 @@ class Diffusion:
             model_outputs.append(noise_pred)
             pred_original_samples.append(pred_original_sample.detach())
 
+            if return_xts:
+                xts.append(xt.detach())
+
         x0 = xt
         x0 = self.decode(x0)
 
         img = tensor_to_pil(x0)
-        # pred_original_samples = torch.stack(
-        #    pred_original_samples, dim=0
-        # ).squeeze()  # B, 1, C, H, W -> B, C, H, W
-        pred_original_samples = process_lists_of_tensors(self, pred_original_samples)
-        # pred_original_samples = tensors_to_pils(pred_original_samples)
 
-        return img, model_outputs, pred_original_samples
+        pred_original_samples = process_lists_of_tensors(self, pred_original_samples)
+
+        if return_xts:
+            xts = process_lists_of_tensors(self, xts)
+            return img, model_outputs, pred_original_samples, xts
+        else:
+            return img, model_outputs, pred_original_samples, None
 
     def generate_images(
         self,
@@ -100,11 +106,14 @@ class Diffusion:
         return_pred_original_samples: bool = True,
         prompt: str = "",
         cfg_scale: float = 3.5,
+        return_xts: bool = False,
     ):
         generator = set_seed(seed)
 
         self.scheduler.set_timesteps(num_inference_steps)
 
+        all_xts = []
+        all_zs = []
         all_imgs = []
         all_model_outputs = []
         all_original_sample_preds = []
@@ -118,7 +127,9 @@ class Diffusion:
                 eta=eta,
                 generator=generator,
             )
-            sample, model_outputs, pred_original_samples = self.generate_image(
+            all_xts.append(xt)
+            all_zs.append(zs)
+            sample, model_outputs, pred_original_samples, xts = self.generate_image(
                 xt=xt,
                 eta=eta,
                 zs=zs,
@@ -126,6 +137,7 @@ class Diffusion:
                 generator=generator,
                 prompt=prompt,
                 cfg_scale=cfg_scale,
+                return_xts=return_xts,
             )
             all_imgs.append(sample)
             all_model_outputs.append(model_outputs)
@@ -133,4 +145,4 @@ class Diffusion:
             if return_pred_original_samples:
                 all_original_sample_preds.append(pred_original_samples)
 
-        return all_imgs, all_model_outputs, all_original_sample_preds
+        return all_imgs, all_model_outputs, all_original_sample_preds, all_xts, all_zs

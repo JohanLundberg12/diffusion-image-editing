@@ -1,3 +1,4 @@
+from typing import List
 from IPython.display import display
 import matplotlib.pyplot as plt
 import numpy as np
@@ -5,6 +6,18 @@ import torch
 from PIL import Image
 
 from transforms import tensors_to_pils
+
+
+def display_result_images_alongside_source_image(
+    result_images: List[Image.Image], source_image: Image.Image
+) -> Image.Image:
+    images_to_concatenate = [np.array(source_image)] + [
+        np.array(img) for img in result_images
+    ]
+
+    res = np.concatenate(images_to_concatenate, axis=1)
+
+    return Image.fromarray(res)
 
 
 def display_alongside_source_image(
@@ -55,10 +68,10 @@ def get_num_rows(num_images: int, num_cols: int) -> int:
     """
     num_rows, num_cols = divmod(num_images, num_cols)  # return x // y, x % y
 
-    if num_rows > 0:
+    if num_cols > 0:
         num_rows += 1
 
-    return num_cols, num_rows
+    return num_rows
 
 
 def show_images_in_a_grid(
@@ -67,12 +80,10 @@ def show_images_in_a_grid(
     titles: list = [],
     super_title: Optional[str] = None,
     figsize: tuple = (10, 10),
+    y_labels=None,
 ):
     num_rows = get_num_rows(len(images), num_cols)
     fig, axarr = plt.subplots(num_rows, num_cols, figsize=figsize)
-    axarr = np.array(
-        [axarr]
-    )  # Make sure axarr is always an array, even when it's a single AxesSubplot object
 
     for i, (img, title) in enumerate(zip_longest(images, titles, fillvalue="")):
         row = i // num_cols
@@ -80,7 +91,11 @@ def show_images_in_a_grid(
         ax = axarr[row, col] if num_rows > 1 and num_cols > 1 else axarr[max(row, col)]
         ax.imshow(img, cmap="viridis")
         ax.set_title(title)
-        ax.axis("off")
+
+        if col == 0 and y_labels is not None:
+            ax.set_ylabel(f"loss scale: {y_labels[row]}")
+        else:
+            ax.axis("off")
     if super_title is not None:
         fig.suptitle(super_title)
     plt.tight_layout()

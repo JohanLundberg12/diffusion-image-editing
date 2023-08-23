@@ -80,23 +80,20 @@ def avg_increase_decrease_per_attribute(
         xt = generate_random_samples(1, diffusion_model.unet, generator=generator)
         zs = generate_random_samples(50, diffusion_model.unet, generator=generator)
 
-        img, model_outputs, pred_original_samples = diffusion_model.generate_image(
+        img, model_outputs, pred_original_samples, _ = diffusion_model.generate_image(
             xt=xt,
             eta=1,
             zs=zs,
-            num_of_inference_steps=50,
-            show_progbar=True,
-            return_pred_original_samples=True,
+            num_inference_steps=50,
         )
 
         img_t = pil_to_tensor(img).to("cuda")
         o_attr = predictor(img_t).view(-1, 40, 2)
 
         img_edit = editor.edit_image(
-            img=img,
             xt=xt,
-            model_outputs=model_outputs,
             eta=1,
+            model_outputs=model_outputs,
             zs=zs,
             attr_func=attr_func,
         )[0]
@@ -174,23 +171,20 @@ def attribute_consistency(
         xt = generate_random_samples(1, diffusion_model.unet, generator=generator)
         zs = generate_random_samples(50, diffusion_model.unet, generator=generator)
 
-        img, model_outputs, pred_original_samples = diffusion_model.generate_image(
+        img, model_outputs, pred_original_samples, _ = diffusion_model.generate_image(
             xt=xt,
             eta=1,
             zs=zs,
-            num_of_inference_steps=50,
-            show_progbar=True,
-            return_pred_original_samples=True,
+            num_inference_steps=50,
         )
 
         img_t = pil_to_tensor(img).to("cuda")
         o_attr = predictor(img_t).view(-1, 40, 2)
 
         img_edit = editor.edit_image(
-            img=img,
             xt=xt,
-            model_outputs=model_outputs,
             eta=1,
+            model_outputs=model_outputs,
             zs=zs,
             attr_func=attr_func,
         )[0]
@@ -207,3 +201,66 @@ def attribute_consistency(
     accs = accs / n_samples
 
     return accs
+
+
+import sys
+from attr_functions import AnyGANAttrFunc
+from models import create_diffusion_model, SegmentationModel
+from utils import set_seed
+
+
+if __name__ == "__main__":
+    # args: diffusion_model (str), attr_func (str), n_samples (int), generator (int)
+
+    args = sys.argv[1:]
+
+    diffusion_model = args[0]
+    attr_func = args[1]
+    n_samples = int(args[2])
+    generator = set_seed(int(args[3]))
+    loss_scale = float(args[4])
+    t1 = float(args[5])
+    t2 = float(args[6])
+
+    if diffusion_model == "ddpm":
+        diffusion_model = create_diffusion_model(diffusion_model, sample_clipping=True)
+    elif diffusion_model == "ldm":
+        diffusion_model = create_diffusion_model(diffusion_model, sample_clipping=False)
+    elif diffusion_model == "sd":
+        diffusion_model = create_diffusion_model(diffusion_model, sample_clipping=False)
+    else:
+        raise ValueError("diffusion_model must be ddpm, ldm, or sd")
+
+    if attr_func == "anygan":
+        predictor = get_pretrained_anyGAN()
+        attr_func = AnyGANAttrFunc(
+            predictor=predictor,
+            idx_for_class=31,
+            loss_scale=loss_scale,
+            t1=t1,
+            t2=t2,
+        )
+
+    editor = SegDiffEditPipeline(
+        diffusion_wrapper=diffusion_model,
+        segmentation_model=SegmentationModel(),
+    )
+
+    accs = attribute_consistency(
+        editor=editor,
+        diffusion_model=diffusion_model,
+        attr_func=attr_func,
+        n_samples=n_samples,
+        generator=generator,
+    )
+    print(accs)
+
+    d_zero, d_one = avg_increase_decrease_per_attribute(
+        editor=editor,
+        diffusion_model=diffusion_model,
+        attr_func=attr_func,
+        n_samples=n_samples,
+        generator=generator,
+    )
+    print(d_zero)
+    print(d_one)

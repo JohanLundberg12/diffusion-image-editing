@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import List
 
 import lpips
 import torch
@@ -38,35 +37,28 @@ def color_loss(
     return color_loss
 
 
-def _init_loss_scales(loss_scales: torch.Tensor, t1: int, t2: int) -> torch.Tensor:
-    num_elements = loss_scales.size().numel()
-    interval_len = t2 - t1
-
-    if num_elements != interval_len:
-        if num_elements < interval_len and num_elements == 1:
-            loss_scales = loss_scales.repeat(interval_len)
-        else:
-            raise ValueError(
-                f"loss_scales must be of length {interval_len} or 1, but got {num_elements}"
-            )
-
-    return loss_scales
-
-
 class AttrFunc(ABC):
     """Abstract base class for different attribute function strategies."""
 
     def __init__(
-        self, loss_scale: float = 1, t1: int = 0, t2: int = 50, **kwargs
+        self,
+        loss_scale: float = 1,
+        t1: int = 0,
+        t2: int = 50,
+        nudge_xt=True,
+        nudge_zt=False,
+        **kwargs,
     ) -> None:
         self.kwargs = kwargs
-        self.loss_scale = torch.Tensor(loss_scale).to("cuda")
+        self.loss_scale = loss_scale
         self.t1 = t1
         self.t2 = t2
+        self.nudge_xt = nudge_xt
+        self.nudge_zt = nudge_zt
 
         # prepare lpips metric
         if kwargs.get("use_lpips", False):
-            self.loss_fn_vgg = lpips.LPIPS(net="vgg")
+            self.loss_fn_vgg = lpips.LPIPS(net="vgg").to("cuda")
             self.metric = apply_lpips
         elif kwargs.get("use_l2", False):
             self.metric = l2_norm
@@ -88,22 +80,18 @@ class AttrFunc(ABC):
     ) -> torch.Tensor:
         """Calculate the loss and do something with it."""
         if kwargs.get("mask_pred_original_sample", False):
-            lambda_ = kwargs.get("lambda")
-            metric = kwargs.get("metric")
+            lambda_ = kwargs.get("lambda_")
             mask = kwargs.get("mask")
             x_0 = kwargs.get("x_0")
 
-            assert lambda_ is not None
-            assert metric is not None
-            assert mask is not None
-            assert x_0 is not None
-
             if kwargs.get("use_lpips", False):
-                attr_loss = self.loss(mask * pred_original_sample) + lambda_ * metric(
+                attr_loss = self.loss(
+                    mask * pred_original_sample
+                ) + lambda_ * apply_lpips(
                     1 - mask * pred_original_sample, x_0, self.loss_fn_vgg
                 )
             elif kwargs.get("use_l2", False):
-                attr_loss = self.loss(mask * pred_original_sample) + lambda_ * metric(
+                attr_loss = self.loss(mask * pred_original_sample) + lambda_ * l2_norm(
                     1 - mask * pred_original_sample, x_0
                 )
             else:
@@ -132,6 +120,7 @@ class AttrFunc(ABC):
     def apply(
         self,
         xt,  # must have parameter
+        zt,
         model_output,  # must have parameter
         timestep,  # must have parameter
         step_idx,  # must have parameter
@@ -151,7 +140,7 @@ class AttrFunc(ABC):
 
         # don't apply attr func if we are outside the interval
         if step_idx < self.t1 or step_idx >= self.t2:
-            return xt
+            return xt, zt
         else:
             loss_scale = self.loss_scale
 
@@ -165,9 +154,13 @@ class AttrFunc(ABC):
 
         attr_grad = self.get_attr_grad(xt, pred_original_sample, loss_scale, **kwargs)
 
-        xt = xt.detach() + attr_grad * alpha_prod_t**2
+        if self.nudge_xt:
+            xt = xt.detach() + attr_grad * alpha_prod_t**2
 
-        return xt
+        if self.nudge_zt:
+            zt = zt.detach() + attr_grad * alpha_prod_t**2
+
+        return xt, zt
 
 
 class SingleColorAttrFunc(AttrFunc):
@@ -216,53 +209,49 @@ class NetAttrFunc(AttrFunc):
         super().__init__(**kwargs)
         self.segmentation_model = segmentation_model
         self.idx_for_class = idx_for_class
-        self.norm_factor = None
 
     def loss(self, img, **kwargs):
         out = self.segmentation_model.net(img)[0]  # 1, 19, 256, 256
+        out = out.squeeze(0).softmax(dim=0)
+        out = out.sum(dim=(1, 2)) / (256 * 256)
+        out = out[self.idx_for_class].sum()
 
-        # get cls out
-        # out_cls = out[0, self.idx_for_class]  # 256, 256
-        # out_softmax = torch.nn.functional.softmax(out_cls, dim=1)  # 256, 256
-        # out_sum = out_softmax.sum(dim=(0, 1)) / (256 * 256)  # 19
-        # val = out_sum.sum()
-
-        # other approach
-        out_softmax = torch.nn.functional.softmax(out, dim=1)  # 1, 19, 256, 256
-        out_sum = out_softmax.sum(dim=(2, 3)) / (256 * 256)  # 1, 19
-        out_cls = out_sum[0, self.idx_for_class]
-
-        if self.norm_factor is None:
-            # Compute the normalization factor as the sum of the mask values
-            mask = torch.any(
-                torch.stack(
-                    [(torch.argmax(out, dim=1) == idx) for idx in self.idx_for_class]
-                ),
-                dim=0,
-            ).float()
-
-            # Compute the normalization factor as the sum of the mask values
-            self.norm_factor = mask.sum()
-
-        # If norm_factor is 0, it means that there are no pixels for this class. Avoid dividing by zero.
-        if self.norm_factor > 0:
-            val = out_cls.sum() / self.norm_factor
-        else:
-            val = out_cls.sum()
-
-        print("val: ", val)
-
-        return val
+        return out
 
 
-class AnyGANAttrFunc(AttrFunc):
-    def __init__(self, predictor, idx_for_class, **kwargs) -> None:
+class ClassifierAttrFunc(AttrFunc):
+    def __init__(
+        self,
+        predictor,
+        idx_for_class,
+        idx_of_interest=0,
+        regularize_idx_idx_score=(None, None, None),
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self.predictor = predictor
         self.idx_for_class = idx_for_class
+        self.idx_of_interest = idx_of_interest
+        self.regularize_idx_idx_score = regularize_idx_idx_score
 
     def loss(self, xt, **kwargs):
         attr = self.predictor(xt).view(-1, 40, 2)
-        max_class_value = attr[0][self.idx_for_class].max()
+        class_value = attr[0][self.idx_for_class][
+            self.idx_of_interest
+        ]  # score for class
 
-        return max_class_value
+        if self.regularize_idx_idx_score[0] is not None:
+            idx = self.regularize_idx_idx_score[0]
+            pred_idx = self.regularize_idx_idx_score[1]
+            other_class_value = attr[0][idx][
+                pred_idx
+            ]  # score for glasses=True if pred_idx=1
+            score = self.regularize_idx_idx_score[2][
+                pred_idx
+            ]  # score for glasses=True if pred_idx=1
+
+            score = (other_class_value + score) ** 2
+
+            class_value = class_value + score
+
+        return class_value
